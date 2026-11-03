@@ -2,9 +2,12 @@
 // Copyright (c) 2026 Piotr Błażejewicz and contributors
 
 pub mod hardware;
+pub mod platform;
 pub mod snapshot;
+pub mod ui;
 
 pub use hardware::{CollectorMode, HardwareCollector};
+pub use platform::MutopPlatform;
 pub use snapshot::{get_schema_json, print_schema, MutopSnapshot};
 
 pub fn version() -> &'static str {

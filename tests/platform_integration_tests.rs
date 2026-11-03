@@ -1,0 +1,298 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright (c) 2026 Piotr Błażejewicz and contributors
+
+use edgetop_core::cli::{parse_args, CliAction};
+use edgetop_core::mcp::handle_mcp_request;
+use edgetop_core::stream::{run_stream, StreamOptions};
+use edgetop_core::{EdgePlatform, ProcessLifecycleEvent, TickContext};
+use mutop_ai::platform::MutopPlatform;
+use serde_json::json;
+
+#[test]
+fn test_mutop_platform_metadata_and_mock_collection() {
+    let mut platform = MutopPlatform::new_mock();
+    let meta = platform.metadata();
+
+    assert_eq!(meta.binary_name, "mutop-ai");
+    assert!(meta.board_name.contains("LattePanda Mu Ultra"));
+    assert_eq!(meta.mcp_scheme, "mutop");
+    assert_eq!(meta.default_idle_baseline_w, 8.5);
+
+    let ctx = TickContext {
+        interval_ms: Some(200.0),
+        marker: Some("bench_start".to_string()),
+        events: vec![ProcessLifecycleEvent {
+            event: "started".into(),
+            pid: 4096,
+            name: "llama-server.exe".to_string(),
+            timestamp_unix_ms: 1730000000000,
+        }],
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: true,
+        tick_index: 0,
+        elapsed_run_secs: 0.2,
+    };
+
+    let snapshot = platform.collect_snapshot(&ctx);
+    assert_eq!(snapshot.host.total_ai_tops, 115);
+    assert_eq!(snapshot.marker, Some("bench_start".to_string()));
+    assert_eq!(snapshot.events.len(), 1);
+    assert_eq!(snapshot.events[0].name, "llama-server.exe");
+    assert_eq!(snapshot.memory.installed_mop_mb, 16384);
+
+    let procs = platform.current_tracked_processes(&snapshot);
+    assert!(!procs.is_empty());
+}
+
+#[test]
+fn test_mutop_platform_summary_and_diagnostics_extraction() {
+    let mut platform = MutopPlatform::new_mock();
+    let ctx = TickContext::default();
+    let snapshot = platform.collect_snapshot(&ctx);
+
+    let sample = platform.extract_summary_sample(&snapshot, 50.0);
+    assert!(sample.interval_secs > 0.0);
+    assert!(sample.power_w.is_some());
+    assert_eq!(
+        sample.ram_available_gb,
+        snapshot.memory.os_avail_phys_mb as f64 / 1024.0
+    );
+    assert_eq!(sample.cpu_big_pct, snapshot.cpu.lion_cove_p_load_pct);
+    assert_eq!(sample.cpu_little_pct, snapshot.cpu.skymont_lpe_load_pct);
+
+    let diag = platform.extract_diagnostics(&snapshot);
+    assert_eq!(diag.health_status, "Healthy");
+    assert!(diag.thermal_headroom_c.is_some());
+    assert!(diag.npu_status.contains("Intel(R) AI Boost"));
+}
+
+#[test]
+fn test_mutop_platform_oneshot_format() {
+    let mut platform = MutopPlatform::new_mock();
+    let ctx = TickContext {
+        tracked_patterns: vec!["llama".to_string()],
+        ..Default::default()
+    };
+    let snapshot = platform.collect_snapshot(&ctx);
+
+    let oneshot = platform.format_oneshot(&snapshot);
+    assert!(oneshot.contains("MUTOP-AI TELEMETRY SNAPSHOT"));
+    assert!(oneshot.contains("LattePanda Mu Ultra"));
+    assert!(oneshot.contains("115"));
+    assert!(oneshot.contains("Lion Cove P"));
+    assert!(oneshot.contains("Skymont LP-E"));
+    assert!(oneshot.contains("Arc 140V GPU"));
+    assert!(oneshot.contains("AI Boost NPU 4"));
+    assert!(oneshot.contains("16 GB LPDDR5X-8533 MoP"));
+}
+
+#[test]
+fn test_mutop_cli_parsing_dispatch() {
+    let platform = MutopPlatform::new_mock();
+    let meta = platform.metadata();
+
+    assert_eq!(
+        parse_args(["mutop-ai", "-h"], meta).unwrap(),
+        CliAction::PrintHelp
+    );
+    assert_eq!(
+        parse_args(["mutop-ai", "-v"], meta).unwrap(),
+        CliAction::PrintVersion
+    );
+    assert_eq!(
+        parse_args(["mutop-ai", "--schema"], meta).unwrap(),
+        CliAction::PrintSchema
+    );
+
+    match parse_args(["mutop-ai", "-j", "-p", "llama"], meta).unwrap() {
+        CliAction::Json(opts) => {
+            assert_eq!(opts.tracked_processes, vec!["llama".to_string()]);
+        }
+        _ => panic!("Expected Json action"),
+    }
+
+    match parse_args(["mutop-ai", "-1"], meta).unwrap() {
+        CliAction::Oneshot(_) => {}
+        _ => panic!("Expected Oneshot action"),
+    }
+
+    match parse_args(["mutop-ai", "-s", "250", "--summary"], meta).unwrap() {
+        CliAction::Stream(opts) => {
+            assert_eq!(opts.interval_ms, 250);
+            assert!(opts.summary);
+        }
+        _ => panic!("Expected Stream action"),
+    }
+
+    match parse_args(["mutop-ai", "--mcp"], meta).unwrap() {
+        CliAction::McpStdio(_) => {}
+        _ => panic!("Expected McpStdio action"),
+    }
+
+    match parse_args(["mutop-ai", "--mcp-port", "8899"], meta).unwrap() {
+        CliAction::McpHttp(addr, _) => {
+            assert_eq!(addr, "0.0.0.0:8899");
+        }
+        _ => panic!("Expected McpHttp action"),
+    }
+
+    match parse_args(["mutop-ai"], meta).unwrap() {
+        CliAction::RunTui(_) => {}
+        _ => panic!("Expected RunTui action"),
+    }
+}
+
+#[test]
+fn test_mutop_mcp_jsonrpc_protocol() {
+    let mut platform = MutopPlatform::new_mock();
+
+    // 1. initialize
+    let init_req = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {}
+    });
+    let resp = handle_mcp_request(&mut platform, &init_req, None).unwrap();
+    assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
+    assert_eq!(resp["result"]["serverInfo"]["name"], "mutop-ai");
+
+    // 2. tools/list
+    let list_req = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+    });
+    let resp = handle_mcp_request(&mut platform, &list_req, None).unwrap();
+    let tools = resp["result"]["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|t| t["name"] == "get_ai_diagnostics"));
+    assert!(tools.iter().any(|t| t["name"] == "get_telemetry_snapshot"));
+    assert!(tools.iter().any(|t| t["name"] == "get_hardware_schema"));
+
+    // 3. tools/call: get_telemetry_snapshot
+    let call_snap = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "get_telemetry_snapshot",
+            "arguments": {}
+        }
+    });
+    let resp = handle_mcp_request(&mut platform, &call_snap, None).unwrap();
+    assert_eq!(resp["result"]["content"][0]["type"], "text");
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("\"total_ai_tops\": 115"));
+
+    // 4. resources/read: mutop://telemetry/schema
+    let read_schema = json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "resources/read",
+        "params": {
+            "uri": "mutop://telemetry/schema"
+        }
+    });
+    let resp = handle_mcp_request(&mut platform, &read_schema, None).unwrap();
+    let schema_text = resp["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(schema_text.contains("timestamp_unix"));
+}
+
+#[test]
+fn test_mutop_stream_execution() {
+    let mut platform = MutopPlatform::new_mock();
+    let opts = StreamOptions {
+        interval_ms: 10,
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: true,
+        duration_secs: None,
+        summary: true,
+        mark_file: None,
+        active_threshold_pct: 50.0,
+    };
+
+    let mut out = Vec::new();
+    let mut tick = 0;
+    let accumulator = run_stream(&mut platform, &opts, &mut out, || {
+        tick += 1;
+        tick > 3
+    });
+
+    assert_eq!(accumulator.total_samples, 3);
+    let out_str = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = out_str.lines().collect();
+    assert_eq!(lines.len(), 3);
+    for line in lines {
+        let snap: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(snap["host"]["total_ai_tops"], 115);
+    }
+}
+
+#[test]
+fn test_summary_sample_preserves_slots_metrics() {
+    let mut platform = MutopPlatform::new_mock();
+    let ctx = TickContext::default();
+    let mut snapshot = platform.collect_snapshot(&ctx);
+
+    snapshot.npu.slots_metrics = Some(mutop_ai::snapshot::types::LlamaSlotsMetrics {
+        prompt_tokens_per_sec: 120.5,
+        generation_tokens_per_sec: 35.2,
+        active_slots: 1,
+        total_slots: 4,
+        prompt_tokens_processed: 512,
+        tokens_decoded: 128,
+        completed_task_tokens: Some(640),
+    });
+
+    let sample = platform.extract_summary_sample(&snapshot, 50.0);
+    assert_eq!(sample.prompt_tokens_processed, 512);
+    assert_eq!(sample.tokens_decoded, 128);
+    assert_eq!(sample.completed_task_tokens, Some(640));
+    assert_eq!(sample.prompt_tps, Some(120.5));
+    assert_eq!(sample.decode_tps, Some(35.2));
+}
+
+#[test]
+fn test_calibrate_idle_baseline() {
+    let mut platform = MutopPlatform::new_mock();
+    assert_eq!(platform.collector_mut().idle_baseline_w, 4.8);
+    let calibrated = platform.calibrate_idle_baseline(3, std::time::Duration::ZERO);
+    assert_eq!(calibrated, Some(17.5));
+    assert_eq!(platform.collector_mut().idle_baseline_w, 17.5);
+}
+
+#[test]
+fn test_include_threads_omission_behavior() {
+    let mut platform = MutopPlatform::new_mock();
+
+    // Case 1: include_threads = false -> threads array omitted from serialized JSON
+    let ctx_no_threads = TickContext {
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: false,
+        ..Default::default()
+    };
+    let snap_no_threads = platform.collect_snapshot(&ctx_no_threads);
+    let json_no_threads = serde_json::to_string(&snap_no_threads).unwrap();
+    let val_no_threads: serde_json::Value = serde_json::from_str(&json_no_threads).unwrap();
+    let procs_no_threads = val_no_threads["tracked_processes"].as_array().unwrap();
+    assert!(!procs_no_threads.is_empty());
+    assert!(procs_no_threads[0].get("threads").is_none());
+
+    // Case 2: include_threads = true -> threads array present and populated
+    let ctx_with_threads = TickContext {
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: true,
+        ..Default::default()
+    };
+    let snap_with_threads = platform.collect_snapshot(&ctx_with_threads);
+    let json_with_threads = serde_json::to_string(&snap_with_threads).unwrap();
+    let val_with_threads: serde_json::Value = serde_json::from_str(&json_with_threads).unwrap();
+    let procs_with_threads = val_with_threads["tracked_processes"].as_array().unwrap();
+    assert!(!procs_with_threads.is_empty());
+    assert!(procs_with_threads[0].get("threads").is_some());
+    assert!(!procs_with_threads[0]["threads"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}

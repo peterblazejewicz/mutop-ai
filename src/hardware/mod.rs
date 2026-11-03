@@ -74,6 +74,7 @@ impl HardwareCollector {
         &mut self,
         marker: Option<String>,
         tracked_patterns: &[String],
+        include_threads: bool,
     ) -> MutopSnapshot {
         let is_mock = self.mode == CollectorMode::Mock;
         let now = SystemTime::now();
@@ -108,8 +109,12 @@ impl HardwareCollector {
         let timing = collect_timing_snapshot(is_mock);
 
         let tracked_processes = if !tracked_patterns.is_empty() || is_mock {
-            let procs =
-                collect_tracked_processes(self.pdh_state.as_ref(), tracked_patterns, is_mock);
+            let procs = collect_tracked_processes(
+                self.pdh_state.as_ref(),
+                tracked_patterns,
+                include_threads,
+                is_mock,
+            );
             if procs.is_empty() {
                 None
             } else {
@@ -147,6 +152,7 @@ impl HardwareCollector {
             timing,
             ai_diagnostics,
             tracked_processes,
+            events: Vec::new(),
         }
     }
 }

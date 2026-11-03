@@ -37,6 +37,9 @@ fn mock_npu_snapshot() -> IntelNpuSnapshot {
             generation_tokens_per_sec: 0.0,
             active_slots: 0,
             total_slots: 4,
+            prompt_tokens_processed: 0,
+            tokens_decoded: 0,
+            completed_task_tokens: None,
         }),
         active_processes: vec![AcceleratorProcess {
             pid: 1420,

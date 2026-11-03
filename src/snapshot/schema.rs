@@ -203,7 +203,20 @@ pub fn get_schema_json() -> &'static str {
       },
       "required": ["status", "llm_worker_on_skymont_lpe_cores", "timer_resolution_coarse_during_voice_turn", "uma_memory_pressure_near_budget", "gpu_or_cpu_power_throttling", "nvme_pcie_link_downgraded", "nvme_thermal_throttling", "bottlenecks", "recommendations"]
     },
-    "tracked_processes": { "type": ["array", "null"] }
+    "tracked_processes": { "type": ["array", "null"] },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "event": { "type": "string" },
+          "pid": { "type": "integer" },
+          "name": { "type": "string" },
+          "timestamp_unix_ms": { "type": "integer" }
+        },
+        "required": ["event", "pid", "name", "timestamp_unix_ms"]
+      }
+    }
   },
   "required": [
     "timestamp_unix",
@@ -222,97 +235,134 @@ pub fn get_schema_json() -> &'static str {
 }"#
 }
 
+pub const SCHEMA_FIELDS: &[edgetop_core::SchemaField] = &[
+    edgetop_core::SchemaField {
+        field: "timestamp_unix",
+        field_type: "u64",
+        description: "Unix epoch timestamp in seconds",
+    },
+    edgetop_core::SchemaField {
+        field: "timestamp_unix_ms",
+        field_type: "u64",
+        description: "Unix epoch timestamp in milliseconds",
+    },
+    edgetop_core::SchemaField {
+        field: "interval_ms",
+        field_type: "f64?",
+        description: "Sample interval in milliseconds",
+    },
+    edgetop_core::SchemaField {
+        field: "marker",
+        field_type: "string?",
+        description: "External benchmark phase marker",
+    },
+    edgetop_core::SchemaField {
+        field: "events[]",
+        field_type: "array",
+        description: "Process lifecycle transitions (started/exited PIDs) in tick",
+    },
+    edgetop_core::SchemaField {
+        field: "host.board",
+        field_type: "string",
+        description: "Carrier board + compute module model",
+    },
+    edgetop_core::SchemaField {
+        field: "host.soc",
+        field_type: "string",
+        description: "SoC identification (Lunar Lake 256V)",
+    },
+    edgetop_core::SchemaField {
+        field: "host.privilege_tier",
+        field_type: "enum",
+        description: "Tier1Unprivileged | Tier2ElevatedAdmin | Tier3SignedDriver",
+    },
+    edgetop_core::SchemaField {
+        field: "host.total_ai_tops",
+        field_type: "u32",
+        description: "Combined platform AI TOPS (115 TOPS)",
+    },
+    edgetop_core::SchemaField {
+        field: "cpu.total_load_pct",
+        field_type: "f32",
+        description: "Total 8-core CPU utilization %",
+    },
+    edgetop_core::SchemaField {
+        field: "cpu.lion_cove_p_load_pct",
+        field_type: "f32",
+        description: "Lion Cove P-cores (0..3) load %",
+    },
+    edgetop_core::SchemaField {
+        field: "cpu.skymont_lpe_load_pct",
+        field_type: "f32",
+        description: "Skymont LP-E cores (4..7) load %",
+    },
+    edgetop_core::SchemaField {
+        field: "cpu.is_throttled",
+        field_type: "bool",
+        description: "True if current clock limit < max clock",
+    },
+    edgetop_core::SchemaField {
+        field: "memory.installed_mop_mb",
+        field_type: "u64",
+        description: "Total 16GB LPDDR5X-8533 MoP (16384 MB)",
+    },
+    edgetop_core::SchemaField {
+        field: "memory.in_use_phys_mb",
+        field_type: "u64",
+        description: "Physical in-use memory (OS Total - Avail)",
+    },
+    edgetop_core::SchemaField {
+        field: "memory.pure_cpu_in_use_mb",
+        field_type: "u64",
+        description: "Reconciled CPU RAM excluding GPU & NPU shared",
+    },
+    edgetop_core::SchemaField {
+        field: "gpu.total_utilization_pct",
+        field_type: "f32",
+        description: "Intel Arc 140V total utilization %",
+    },
+    edgetop_core::SchemaField {
+        field: "npu.utilization_pct",
+        field_type: "f32",
+        description: "Intel NPU 4 (47 TOPS) utilization %",
+    },
+    edgetop_core::SchemaField {
+        field: "power_thermals.package_w",
+        field_type: "f64",
+        description: "RAPL package power in Watts",
+    },
+    edgetop_core::SchemaField {
+        field: "storage.read_mb_s",
+        field_type: "f64",
+        description: "NVMe disk read throughput MB/s",
+    },
+    edgetop_core::SchemaField {
+        field: "timing.timer_resolution",
+        field_type: "object",
+        description: "Windows system timer resolution (ms)",
+    },
+    edgetop_core::SchemaField {
+        field: "ai_diagnostics.status",
+        field_type: "enum",
+        description: "Healthy | Degraded | Critical",
+    },
+];
+
 pub fn print_schema() {
-    println!(
-        "MUTOP-AI TELEMETRY SCHEMA & FIELD DICTIONARY (v{})",
-        env!("CARGO_PKG_VERSION")
+    let meta = edgetop_core::PlatformMetadata {
+        binary_name: "mutop-ai",
+        board_name: "LattePanda Mu Ultra (Intel Core Ultra 7 256V)",
+        description: "LattePanda Mu Ultra & Intel Lunar Lake Hardware Telemetry Monitor",
+        version: env!("CARGO_PKG_VERSION"),
+        default_idle_baseline_w: 8.5,
+        default_stream_interval_ms: 200,
+        mcp_server_name: "mutop-ai",
+        mcp_scheme: "mutop",
+        default_mark_file: "mutop-stream.mark",
+        accelerator_name: "Intel AI Boost NPU & Arc 140V GPU",
+    };
+    print!(
+        "{}",
+        edgetop_core::schema::format_schema_table(&meta, SCHEMA_FIELDS)
     );
-    println!("================================================================================");
-    println!("{:<36} {:<14} {}", "FIELD", "TYPE", "DESCRIPTION");
-    println!("────────────────────────────────────────────────────────────────────────────────");
-    println!(
-        "{:<36} {:<14} {}",
-        "timestamp_unix", "u64", "Unix epoch timestamp in seconds"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "timestamp_unix_ms", "u64", "Unix epoch timestamp in milliseconds"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "interval_ms", "f64?", "Sample interval in milliseconds"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "marker", "string?", "External benchmark phase marker"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "host.board", "string", "Carrier board + compute module model"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "host.soc", "string", "SoC identification (Lunar Lake 256V)"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "host.privilege_tier", "enum", "Tier1Unprivileged | Tier2ElevatedAdmin | Tier3SignedDriver"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "host.total_ai_tops", "u32", "Combined platform AI TOPS (115 TOPS)"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "cpu.total_load_pct", "f32", "Total 8-core CPU utilization %"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "cpu.lion_cove_p_load_pct", "f32", "Lion Cove P-cores (0..3) load %"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "cpu.skymont_lpe_load_pct", "f32", "Skymont LP-E cores (4..7) load %"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "cpu.is_throttled", "bool", "True if current clock limit < max clock"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "memory.installed_mop_mb", "u64", "Total 16GB LPDDR5X-8533 MoP (16384 MB)"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "memory.in_use_phys_mb", "u64", "Physical in-use memory (OS Total - Avail)"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "memory.pure_cpu_in_use_mb", "u64", "Reconciled CPU RAM excluding GPU & NPU shared"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "gpu.total_utilization_pct", "f32", "Intel Arc 140V total utilization %"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "npu.utilization_pct", "f32", "Intel NPU 4 (47 TOPS) utilization %"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "power_thermals.package_w", "f64", "RAPL package power in Watts"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "storage.read_mb_s", "f64", "NVMe disk read throughput MB/s"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "timing.timer_resolution", "object", "Windows system timer resolution (ms)"
-    );
-    println!(
-        "{:<36} {:<14} {}",
-        "ai_diagnostics.status", "enum", "Healthy | Degraded | Critical"
-    );
-    println!("────────────────────────────────────────────────────────────────────────────────");
 }

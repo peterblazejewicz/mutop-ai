@@ -67,6 +67,12 @@ pub struct LlamaSlotsMetrics {
     pub generation_tokens_per_sec: f64,
     pub active_slots: usize,
     pub total_slots: usize,
+    #[serde(default)]
+    pub prompt_tokens_processed: u32,
+    #[serde(default)]
+    pub tokens_decoded: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_task_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,6 +323,7 @@ pub struct ProcessAffinityProfile {
     pub skymont_lpe_threads: usize,
     pub is_eco_qos: bool,
     pub core_distribution: HashMap<String, usize>,
+    #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<LunarLakeThreadPlacement>,
 }
@@ -361,4 +368,6 @@ pub struct MutopSnapshot {
     pub ai_diagnostics: AiDiagnostics,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tracked_processes: Option<Vec<ProcessAffinityProfile>>,
+    #[serde(default)]
+    pub events: Vec<edgetop_core::ProcessLifecycleEvent>,
 }

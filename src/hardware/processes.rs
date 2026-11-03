@@ -8,27 +8,28 @@ use std::collections::HashMap;
 pub fn collect_tracked_processes(
     pdh_state: Option<&PdhTelemetryState>,
     patterns: &[String],
+    include_threads: bool,
     mock: bool,
 ) -> Vec<ProcessAffinityProfile> {
     if mock {
-        return mock_tracked_processes();
+        return mock_tracked_processes(include_threads);
     }
     if patterns.is_empty() {
         return Vec::new();
     }
     #[cfg(windows)]
     {
-        collect_windows_processes(pdh_state, patterns)
+        collect_windows_processes(pdh_state, patterns, include_threads)
     }
     #[cfg(not(windows))]
     {
         let _ = pdh_state;
         let _ = patterns;
-        mock_tracked_processes()
+        mock_tracked_processes(include_threads)
     }
 }
 
-fn mock_tracked_processes() -> Vec<ProcessAffinityProfile> {
+fn mock_tracked_processes(include_threads: bool) -> Vec<ProcessAffinityProfile> {
     let mut core_dist = HashMap::new();
     core_dist.insert("core0".to_string(), 2);
     core_dist.insert("core1".to_string(), 1);
@@ -89,7 +90,7 @@ fn mock_tracked_processes() -> Vec<ProcessAffinityProfile> {
         skymont_lpe_threads: 0,
         is_eco_qos: false,
         core_distribution: core_dist,
-        threads,
+        threads: if include_threads { threads } else { Vec::new() },
     }]
 }
 
@@ -97,6 +98,7 @@ fn mock_tracked_processes() -> Vec<ProcessAffinityProfile> {
 fn collect_windows_processes(
     pdh_state: Option<&PdhTelemetryState>,
     patterns: &[String],
+    include_threads: bool,
 ) -> Vec<ProcessAffinityProfile> {
     use crate::hardware::cpu::discover_windows_core_topology;
     use crate::hardware::dxgi::win_dxgi::enumerate_dxgi_adapters;
@@ -347,7 +349,11 @@ fn collect_windows_processes(
             skymont_lpe_threads: lpe_threads,
             is_eco_qos: has_eco_qos,
             core_distribution: core_dist,
-            threads: thread_records,
+            threads: if include_threads {
+                thread_records
+            } else {
+                Vec::new()
+            },
         });
     }
 

@@ -16,6 +16,7 @@ fn test_mock_hardware_collector() {
     let snapshot = collector.collect_snapshot(
         Some("benchmark_phase_1".to_string()),
         &["llama-server".to_string()],
+        true,
     );
 
     assert_eq!(snapshot.marker.as_deref(), Some("benchmark_phase_1"));
@@ -95,7 +96,7 @@ fn test_mock_hardware_collector() {
 #[test]
 fn test_snapshot_serialization_and_deserialization() {
     let mut collector = HardwareCollector::new_mock();
-    let snapshot = collector.collect_snapshot(None, &[]);
+    let snapshot = collector.collect_snapshot(None, &[], false);
 
     let json_str = serde_json::to_string_pretty(&snapshot).expect("serialize snapshot");
     assert!(!json_str.is_empty());
@@ -159,7 +160,7 @@ fn test_uma_memory_model_math() {
 #[test]
 fn test_ai_diagnostics_rules() {
     let mut collector = HardwareCollector::new_mock();
-    let snapshot = collector.collect_snapshot(None, &[]);
+    let snapshot = collector.collect_snapshot(None, &[], false);
 
     // Rule 1: LLM worker on LP-E cores
     let bad_process = ProcessAffinityProfile {
@@ -276,7 +277,7 @@ fn test_individual_collectors() {
     let timing = collect_timing_snapshot(true);
     assert_eq!(timing.crystal_hz, 38_400_000);
 
-    let procs = collect_tracked_processes(None, &["llama".to_string()], true);
+    let procs = collect_tracked_processes(None, &["llama".to_string()], true, true);
     assert!(!procs.is_empty());
 }
 
@@ -292,7 +293,7 @@ fn test_print_schema_and_version() {
 #[ignore = "Live hardware verification runs only on LattePanda Mu Ultra (MU) target"]
 fn test_live_collector_graceful_run() {
     let mut collector = HardwareCollector::new();
-    let snapshot = collector.collect_snapshot(None, &[]);
+    let snapshot = collector.collect_snapshot(None, &[], false);
     assert_eq!(snapshot.host.total_ai_tops, 115);
     assert_eq!(snapshot.memory.installed_mop_mb, 16384);
 }
