@@ -22,3 +22,10 @@ Thumbs.db
 # Agent metadata
 .agents/
 .remember/
+
+# Benchmark artifacts & IPC markers
+*markers*.txt
+__pycache__/
+*.pyc
+
+
