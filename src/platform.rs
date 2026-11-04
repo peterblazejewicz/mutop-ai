@@ -242,6 +242,55 @@ impl EdgePlatform for MutopPlatform {
             .map(|procs| procs.iter().any(|p| p.cpu_pct >= active_threshold_pct))
             .unwrap_or(false);
 
+        let (
+            tracked_proc_name,
+            tracked_proc_cpu_pct,
+            tracked_proc_big_cpu_pct,
+            tracked_proc_little_cpu_pct,
+            tracked_proc_big_threads,
+            tracked_proc_little_threads,
+            tracked_proc_rss_mb,
+            tracked_proc_eco_qos,
+        ) = if let Some(ref procs) = snapshot.tracked_processes {
+            if !procs.is_empty() {
+                let name = if procs.len() == 1 {
+                    Some(procs[0].name.clone())
+                } else {
+                    procs
+                        .iter()
+                        .max_by(|a, b| {
+                            a.cpu_pct
+                                .partial_cmp(&b.cpu_pct)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| a.cpu_working_set_mb.cmp(&b.cpu_working_set_mb))
+                        })
+                        .map(|p| p.name.clone())
+                };
+                let cpu_sum: f32 = procs.iter().map(|p| p.cpu_pct).sum();
+                let big_cpu_sum: f32 = procs.iter().map(|p| p.lion_cove_p_cpu_pct).sum();
+                let little_cpu_sum: f32 = procs.iter().map(|p| p.skymont_lpe_cpu_pct).sum();
+                let big_th_sum: usize = procs.iter().map(|p| p.lion_cove_p_threads).sum();
+                let little_th_sum: usize = procs.iter().map(|p| p.skymont_lpe_threads).sum();
+                let rss_sum: u64 = procs.iter().map(|p| p.cpu_working_set_mb).sum();
+                let eco_qos = procs.iter().any(|p| p.is_eco_qos);
+
+                (
+                    name,
+                    Some(cpu_sum),
+                    Some(big_cpu_sum),
+                    Some(little_cpu_sum),
+                    Some(big_th_sum as u32),
+                    Some(little_th_sum as u32),
+                    Some(rss_sum),
+                    Some(eco_qos),
+                )
+            } else {
+                (None, None, None, None, None, None, None, None)
+            }
+        } else {
+            (None, None, None, None, None, None, None, None)
+        };
+
         SummarySample {
             interval_secs,
             power_w,
@@ -267,6 +316,14 @@ impl EdgePlatform for MutopPlatform {
             decode_tps,
             tracked_proc_busy,
             marker: snapshot.marker.clone(),
+            tracked_proc_name,
+            tracked_proc_cpu_pct,
+            tracked_proc_big_cpu_pct,
+            tracked_proc_little_cpu_pct,
+            tracked_proc_big_threads,
+            tracked_proc_little_threads,
+            tracked_proc_rss_mb,
+            tracked_proc_eco_qos,
         }
     }
 
@@ -462,17 +519,17 @@ impl EdgePlatform for MutopPlatform {
             snapshot
                 .power_thermals
                 .acpi_thermal_zone_c
-                .map(|t| format!("{:.1}°C", t))
+                .map(|t| format!("{:.1}C", t))
                 .unwrap_or_else(|| "-".to_string()),
             snapshot
                 .power_thermals
                 .gpu_c
-                .map(|t| format!("{:.1}°C", t))
+                .map(|t| format!("{:.1}C", t))
                 .unwrap_or_else(|| "-".to_string()),
             snapshot
                 .power_thermals
                 .nvme_composite_c
-                .map(|t| format!("{:.1}°C", t))
+                .map(|t| format!("{:.1}C", t))
                 .unwrap_or_else(|| "-".to_string()),
             snapshot
                 .power_thermals

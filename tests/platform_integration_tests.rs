@@ -48,8 +48,10 @@ fn test_mutop_platform_metadata_and_mock_collection() {
 fn test_mutop_platform_summary_and_diagnostics_extraction() {
     let mut platform = MutopPlatform::new_mock();
     let ctx = TickContext::default();
-    let snapshot = platform.collect_snapshot(&ctx);
+    let mut snapshot = platform.collect_snapshot(&ctx);
 
+    // Case 1: When tracked_processes is None
+    snapshot.tracked_processes = None;
     let sample = platform.extract_summary_sample(&snapshot, 50.0);
     assert!(sample.interval_secs > 0.0);
     assert!(sample.power_w.is_some());
@@ -59,6 +61,34 @@ fn test_mutop_platform_summary_and_diagnostics_extraction() {
     );
     assert_eq!(sample.cpu_big_pct, snapshot.cpu.lion_cove_p_load_pct);
     assert_eq!(sample.cpu_little_pct, snapshot.cpu.skymont_lpe_load_pct);
+    assert!(sample.tracked_proc_name.is_none());
+    assert!(sample.tracked_proc_cpu_pct.is_none());
+    assert!(sample.tracked_proc_big_cpu_pct.is_none());
+    assert!(sample.tracked_proc_little_cpu_pct.is_none());
+    assert!(sample.tracked_proc_big_threads.is_none());
+    assert!(sample.tracked_proc_little_threads.is_none());
+    assert!(sample.tracked_proc_rss_mb.is_none());
+    assert!(sample.tracked_proc_eco_qos.is_none());
+
+    // Case 2: With tracked processes and threads
+    let ctx_procs = TickContext {
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: true,
+        ..Default::default()
+    };
+    let snap_procs = platform.collect_snapshot(&ctx_procs);
+    let sample_procs = platform.extract_summary_sample(&snap_procs, 50.0);
+    assert_eq!(
+        sample_procs.tracked_proc_name.as_deref(),
+        Some("llama-server.exe")
+    );
+    assert!(sample_procs.tracked_proc_cpu_pct.is_some());
+    assert!(sample_procs.tracked_proc_big_cpu_pct.is_some());
+    assert!(sample_procs.tracked_proc_little_cpu_pct.is_some());
+    assert!(sample_procs.tracked_proc_big_threads.is_some());
+    assert!(sample_procs.tracked_proc_little_threads.is_some());
+    assert!(sample_procs.tracked_proc_rss_mb.is_some());
+    assert_eq!(sample_procs.tracked_proc_eco_qos, Some(true));
 
     let diag = platform.extract_diagnostics(&snapshot);
     assert_eq!(diag.health_status, "Healthy");
@@ -76,6 +106,10 @@ fn test_mutop_platform_oneshot_format() {
     let snapshot = platform.collect_snapshot(&ctx);
 
     let oneshot = platform.format_oneshot(&snapshot);
+    assert!(
+        oneshot.is_ascii(),
+        "format_oneshot output must be pure 7-bit ASCII"
+    );
     assert!(oneshot.contains("MUTOP-AI TELEMETRY SNAPSHOT"));
     assert!(oneshot.contains("LattePanda Mu Ultra"));
     assert!(oneshot.contains("115"));
@@ -84,6 +118,68 @@ fn test_mutop_platform_oneshot_format() {
     assert!(oneshot.contains("Arc 140V GPU"));
     assert!(oneshot.contains("AI Boost NPU 4"));
     assert!(oneshot.contains("16 GB LPDDR5X-8533 MoP"));
+}
+
+#[test]
+fn test_summary_report_ascii_and_thread_placement() {
+    let mut platform = MutopPlatform::new_mock();
+    let mut accumulator = edgetop_core::summary::SummaryAccumulator::default();
+
+    // Sample 1: start marker
+    let ctx1 = TickContext {
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: true,
+        marker: Some("prefill-start".to_string()),
+        ..Default::default()
+    };
+    let snap1 = platform.collect_snapshot(&ctx1);
+    let sample1 = platform.extract_summary_sample(&snap1, 50.0);
+    accumulator.record_sample(&sample1);
+
+    // Sample 2: active generation with process telemetry
+    let ctx2 = TickContext {
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: true,
+        marker: None,
+        ..Default::default()
+    };
+    let snap2 = platform.collect_snapshot(&ctx2);
+    let sample2 = platform.extract_summary_sample(&snap2, 50.0);
+    accumulator.record_sample(&sample2);
+
+    // Sample 3: terminal marker
+    let ctx3 = TickContext {
+        tracked_patterns: vec!["llama".to_string()],
+        include_threads: true,
+        marker: Some("gen-end".to_string()),
+        ..Default::default()
+    };
+    let snap3 = platform.collect_snapshot(&ctx3);
+    let sample3 = platform.extract_summary_sample(&snap3, 50.0);
+    accumulator.record_sample(&sample3);
+
+    let report = accumulator.format_report(platform.metadata(), 50.0, 0.6);
+    assert!(
+        report.is_ascii(),
+        "accumulator.format_report output must be pure 7-bit ASCII"
+    );
+
+    // Assert tracked process metrics rows in table
+    assert!(report.contains("Tracked Proc CPU"));
+    assert!(report.contains("  Proc P/Big Core CPU"));
+    assert!(report.contains("  Proc LP-E/Little CPU"));
+    assert!(report.contains("  Proc P/Big Threads"));
+    assert!(report.contains("  Proc LP-E/Little Threads"));
+    assert!(report.contains("  Proc Working Set"));
+
+    // Assert marker interval summary and process thread placement line
+    assert!(report.contains("MARKER PHASES & INTERVAL PROFILING:"));
+    assert!(report.contains("\"prefill-start\" -> \"gen-end\""));
+    assert!(report.contains("Process :"));
+    assert!(report.contains("llama-server.exe"));
+    assert!(report.contains("P/Big:"));
+    assert!(report.contains("LP-E/Little:"));
+    assert!(report.contains("[EcoQoS]"));
 }
 
 #[test]

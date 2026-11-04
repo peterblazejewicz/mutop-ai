@@ -17,6 +17,12 @@ use mutop_ai::platform::MutopPlatform;
 use mutop_ai::ui::{render_ui, ProcessSortMode, UiState};
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
+        windows_sys::Win32::System::Console::SetConsoleCP(65001);
+    }
+
     // Install panic hook restoring terminal raw mode & alternate screen
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
