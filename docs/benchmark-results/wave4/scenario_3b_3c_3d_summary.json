@@ -1,0 +1,128 @@
+{
+  "wave": "Wave 4 - Live Execution of Scenarios 3B (Part 2), 3C, and 3D",
+  "target": "LattePanda Mu Ultra (Intel Core Ultra 7 256V, Arc 140V GPU, AI Boost NPU 4, Windows 11 Build 10.0.26300)",
+  "scenario_3b_part2": {
+    "title": "GPU SLM Startup, System-Prompt KV Prefix Caching & UMA Bandwidth Relief",
+    "load_modes": [
+      {
+        "mode": "mmap",
+        "server_ready_sec": 1.743,
+        "first_request_ttft_ms": 82.6,
+        "total_cold_startup_to_first_token_sec": 1.825
+      },
+      {
+        "mode": "none (no-mmap)",
+        "server_ready_sec": 1.73,
+        "first_request_ttft_ms": 78.0,
+        "total_cold_startup_to_first_token_sec": 1.808
+      },
+      {
+        "mode": "mmap+mlock",
+        "server_ready_sec": 2.356,
+        "first_request_ttft_ms": 80.5,
+        "total_cold_startup_to_first_token_sec": 2.437
+      }
+    ],
+    "system_prompt_prefix_caching": {
+      "turn_1_cold": {
+        "prompt_tokens_evaluated": 240,
+        "prompt_ms": 302.0,
+        "prefill_tok_s": 794.6,
+        "ttft_ms": 302.0
+      },
+      "turn_2_warm_prefix": {
+        "prompt_tokens_evaluated": 238,
+        "prompt_ms": 251.5,
+        "prefill_tok_s": 946.5,
+        "ttft_ms": 251.5
+      },
+      "prefix_prefill_speedup_x": 1.2,
+      "prefill_latency_savings_ms": 50.6
+    },
+    "uma_bandwidth_and_contention": {
+      "F16_KV_Default": {
+        "gpu_pp512_tok_s": 797.1,
+        "gpu_tg128_tok_s": 30.2,
+        "concurrent_npu_turns_completed": 1,
+        "concurrent_npu_avg_ms": 681.7,
+        "concurrent_npu_min_ms": 681.7,
+        "concurrent_npu_max_ms": 681.7
+      },
+      "Q8_0_KV_FlashAttn": {
+        "gpu_pp512_tok_s": 514.2,
+        "gpu_tg128_tok_s": 26.0,
+        "concurrent_npu_turns_completed": 1,
+        "concurrent_npu_avg_ms": 699.8,
+        "concurrent_npu_min_ms": 699.8,
+        "concurrent_npu_max_ms": 699.8
+      }
+    }
+  },
+  "scenario_3c": {
+    "title": "STT/TTS ONNX Offline Graph Optimization, Arena Warmup, Voice Preloading & Tiered Audio Cache",
+    "graph_optimization_and_arena": {
+      "Moonshine_Tiny": {
+        "cold_init_ms": 205.0,
+        "cold_turn1_infer_ms": 32.8,
+        "warm_init_opt_ms": 89.4,
+        "warm_turn2_infer_ms": 32.5,
+        "session_init_speedup_x": 2.29,
+        "infer_arena_speedup_x": 1.01
+      },
+      "Moonshine_Base": {
+        "cold_init_ms": 321.4,
+        "cold_turn1_infer_ms": 89.3,
+        "warm_init_opt_ms": 137.7,
+        "warm_turn2_infer_ms": 79.2,
+        "session_init_speedup_x": 2.33,
+        "infer_arena_speedup_x": 1.13
+      },
+      "Piper_Alan": {
+        "cold_init_ms": 2192.0,
+        "cold_turn1_infer_ms": 32.5,
+        "warm_init_opt_ms": 3979.7,
+        "warm_turn2_infer_ms": 28.2,
+        "session_init_speedup_x": 0.55,
+        "infer_arena_speedup_x": 1.15
+      }
+    },
+    "piper_tiered_synthesis": {
+      "mode_1_cold_spawn_synthesis_ms": 4899.1,
+      "mode_2_warm_preloaded_session_ms": 335.1,
+      "mode_3_ram_pcm_reflex_cache_lookup_ms": 0.0003,
+      "reflex_cache_speedup_vs_cold_x": 4899079.9,
+      "reflex_cache_speedup_vs_warm_x": 335142.1
+    },
+    "streaming_overlapped_tts": {
+      "non_streamed_slm_generation_ms": 1524.4,
+      "non_streamed_tts_synthesis_ms": 1591.5,
+      "non_streamed_ttfa_ms": 3115.9,
+      "streamed_first_clause_ttfa_ms": 2262.2,
+      "ttfa_reduction_ms": 853.7,
+      "ttfa_speedup_x": 1.38
+    }
+  },
+  "scenario_3d": {
+    "title": "End-to-End Target Voice Workflows (Cold vs. Warm Optimized Comparison)",
+    "workflow_1_edge_control": {
+      "cold_unoptimized_sec": 6.803,
+      "warm_s3_turn_sec": 0.908,
+      "warm_s3_stt_ms": 83.7,
+      "warm_s3_npu_ms": 698.8,
+      "warm_s3_tts_ms": 125.7,
+      "warm_fast_path_sec": 0.106,
+      "fast_path_stt_ms": 89.6,
+      "fast_path_embed_ms": 16.5,
+      "fast_path_audio_cache_ms": 0.01,
+      "target_budget_status": "PASS (Warm S3 0.908s < 1.2s VA-7 budget; Fast-path 0.106s < 0.25s budget)"
+    },
+    "workflow_2_generative_slm": {
+      "cold_unoptimized_total_sec": 9.172,
+      "cold_unoptimized_ttfa_sec": 3.323,
+      "warm_streamed_ttfa_sec": 1.102,
+      "warm_streamed_total_sec": 1.103,
+      "ttfa_speedup_vs_cold_x": 3.02,
+      "ttfa_latency_reduction_sec": 2.221
+    }
+  }
+}
