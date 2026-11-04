@@ -1,6 +1,6 @@
 # mutop-ai
 
-High-performance hardware telemetry and AI monitor for the **LattePanda Mu Ultra** (DFR1295 compute module with Intel Core Ultra 7 256V Lunar Lake SoC + DFR1293 Mini Carrier Board).
+Hardware telemetry and AI monitor for the **LattePanda Mu Ultra** (DFR1295 compute module with Intel Core Ultra 7 256V Lunar Lake SoC + DFR1293 Mini Carrier Board).
 
 ## Architecture & Capabilities
 
@@ -16,11 +16,11 @@ High-performance hardware telemetry and AI monitor for the **LattePanda Mu Ultra
 |:-----|:--------------------|:------------------------------|:---------------------|
 | **Tier 1: Unprivileged** | Normal user process | `NtQuerySystemInformation`, DXCore / DXGI adapter enumeration, PDH engine & disk counters, `GetIfTable2`, `wlanapi.dll`, TCP extended tables, `NtQueryTimerResolution` | Baseline operation; higher-tier fields return `None` |
 | **Tier 2: Elevated Admin** | Run as Administrator (`SeDebugPrivilege`) | Storage IOCTLs (`IOCTL_STORAGE_QUERY_PROPERTY` NVMe SMART Health Log `0x02`, PCIe link negotiation), elevated thread query | Link degradation flags and SMART temps omitted if unprivileged |
-| **Tier 3: Signed Driver (Optional)** | Microsoft WHQL-Signed PawnIO Driver (`winget install namazso.PawnIO`) | Direct CPU Package/Core DTS temperatures via MSR `0x1B1`, Carrier Fan RPM (`CPU_FAN` header on ITE IT8613E Super I/O) | 100% driverless fallback: suppresses dummy ACPI constant (`28°C`), reports NVMe SMART temp, and displays `Fan: Auto` (autonomous hardware PWM) |
+| **Tier 3: Signed Driver (Optional)** | Microsoft WHQL-Signed PawnIO Driver (`winget install namazso.PawnIO`) | Direct CPU Package/Core DTS temperatures via MSR `0x1B1`, Carrier Fan RPM (`CPU_FAN` header on ITE IT8613E Super I/O) | Unprivileged user-mode fallback: suppresses dummy ACPI constant (`28°C`), reports NVMe SMART temp, and displays `Fan: Auto` (autonomous hardware PWM) |
 
 ## Optional Hardware Driver: Fan Speed & CPU DTS Thermals (PawnIO)
 
-`mutop-ai` is designed to be **100% functional driverless in unprivileged user mode**. Out of the box with zero drivers installed, it provides full RAPL power metering, UMA memory breakdown, thread-to-core placement, NPU/GPU duty cycles, and NVMe SMART thermals.
+`mutop-ai` operates in unprivileged user mode without kernel drivers by default. Standard execution provides RAPL power metering, UMA memory breakdown, thread-to-core placement, NPU/GPU duty cycles, and NVMe SMART thermals.
 
 ### Carrier Fan RPM & ACPI Dummy Sensor Suppression
 On the LattePanda Mu Ultra (`DFR1295` compute module with Intel Core Ultra 7 256V + `DFR1293` mini carrier board), carrier fan tachometer feedback is managed by an onboard **ITE IT8613E Super I/O** controller connected via Low Pin Count (LPC) I/O ports. Furthermore, the carrier ACPI DSDT/SSDT table lacks an Embedded Controller (`ETMD == 0`), causing the firmware ACPI thermal zone to return a hardcoded static dummy constant `0x0BB8` (`3000`–`3010` tenths of Kelvin = `26.85°C`–`27.85°C`, rendered as `28°C`). `mutop-ai` suppresses this fake ACPI reading automatically.
@@ -38,7 +38,7 @@ winget install namazso.PawnIO
 - **Hardware Integration Details**:
   - **CPU Package DTS**: Samples MSR `0x1B1` (`IA32_PACKAGE_THERM_STATUS`), computing `TjMax - Delta` (e.g. `100°C - 44 = 56°C`), falling back to `0x19C`.
   - **Carrier Fan RPM**: Under the ISA bus synchronization mutex (`Global\Access_ISABUS.HTP.Method`), accesses the IT8613E Hardware Monitor (`0x0A40`) to read tachometer counter `FAN2` (`CPU_FAN` header on Mu Ultra) at registers `0x0E`/`0x19`, calculating actual RPM (`1,350,000 / (raw * 2)`).
-  - **Driverless Fallback**: When PawnIO is not present, `mutop-ai` displays `CPU: -` and `Fan: Auto` (reflecting autonomous carrier hardware PWM fan curve) and reports NVMe composite temperature.
+  - **Unprivileged User-Mode Fallback**: When PawnIO is not present, `mutop-ai` displays `CPU: -` and `Fan: Auto` (reflecting autonomous carrier hardware PWM fan curve) and reports NVMe composite temperature.
 
 ## CLI Options
 

@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Piotr Błażejewicz (Peter Blazejewicz) <peterblazejewicz@users.noreply.github.com>"]
-license = "MIT AND BSD-3-Clause"
-description = "High-performance telemetry and AI monitor for LattePanda Mu Ultra (Intel Core Ultra 7 256V Lunar Lake)"
+license = "MIT OR Apache-2.0"
+description = "Hardware telemetry and AI monitor for LattePanda Mu Ultra (Intel Core Ultra 7 256V Lunar Lake)"
+readme = "README.md"
 repository = "https://github.com/peterblazejewicz/mutop-ai"
 
 [dependencies]
