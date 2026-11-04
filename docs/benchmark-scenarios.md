@@ -242,7 +242,144 @@ Verify the rule engine correctly trips under contention:
 
 ---
 
-## 4. Telemetry Field Verification Matrix
+## 4. Phase 3: Cold vs. Warm Startup & Subsystem Optimization Verification
+
+Phase 3 benchmarks evaluate cold vs. warm startup latency, runtime memory bandwidth optimizations, and Windows 11 hybrid CPU/UMA scheduling dynamics, comparing unoptimized out-of-the-box configurations against fully optimized production pipelines on the LattePanda Mu Ultra.
+
+```
++----------------------------------------------------------------------------------------------------+
+|                       PHASE 3: COLD VS. WARM STARTUP & OPTIMIZATION VERIFICATION                   |
++----------------------------------------------------------------------------------------------------+
+|  [Scenario 3A] NPU Cold vs. Warm Startup, Weightless Blobs & Workload Properties                   |
+|  [Scenario 3B] OpenVINO GPU Kernel Cache & llama.cpp SLM KV Prefix Caching & Quantization          |
+|  [Scenario 3C] STT/TTS ONNX Offline Graph Serialization, Arena Warmup & Pre-Synthesized Caching     |
+|  [Scenario 3D] End-to-End Voice Workflows: Cold vs. Warm Optimized Comparison                      |
+|  [Scenario 3E] Hardware & Driver [LIMITATION MARKER] Verification Matrix                           |
++----------------------------------------------------------------------------------------------------+
+```
+
+### Scenario 3A: NPU Cold vs. Warm Startup, Weightless Blobs & Workload Properties
+
+* **Target Engine:** Intel AI Boost NPU 4 (MCDM compute driver, OpenVINO 2026.4.1).
+* **Models:** `FunctionGemma-270M-INT8`, `EmbeddingGemma-300M`, and `Whisper` tiers (`base`, `small`, `turbo`).
+* **Evaluation Dimensions:**
+  1. **Cold Graph Compile vs. Warm `.blob` Load:**
+     - Measure compilation latency from OpenVINO IR (`.xml`/`.bin`) to NPU VCL machine code without caching (baseline: ~21.8s for FunctionGemma).
+     - Measure warm load latency when using `core.set_property("NPU", {"CACHE_DIR": cache_dir, "CACHE_MODE": "OPTIMIZE_SPEED"})` (target: <1.25s).
+  2. **Monolithic Blobs vs. Weightless Blobs:**
+     - `CACHE_MODE = OPTIMIZE_SPEED`: Monolithic blob containing graph descriptors and INT8 weights (~612 MB for FunctionGemma). Single sequential read mapped directly into NPU DMA buffers.
+     - `CACHE_MODE = OPTIMIZE_SIZE`: Weightless blob containing only neural tile scheduling descriptors (~2–5 MB) referencing external `.bin` weights. Measure the tradeoff in disk footprint vs. startup time (+150–350 ms).
+  3. **AOT Explicit `export_model()` / `import_model()`:**
+     - Benchmark ahead-of-time (AOT) exported `.blob` loading via `core.import_model(stream, "NPU")` on static models (`EmbeddingGemma-300M` [1, 128]), verifying whether frontend IR parsing can be completely eliminated (target: <120 ms).
+  4. **NPU Workload & Turbo Properties:**
+     - Compare default execution against `NPU_TURBO = True` (or `WORKLOAD_TYPE = WORKLOAD_TYPE_DEFAULT` vs `COMPUTE`), recording NPU node utilization, RAPL package power spikes, and inference speedup across 100 tool-call turns.
+* **Telemetry Verification Focus:**
+  - `npu.utilization_pct`: Active MCDM node duty cycle during compile vs. warm load vs. steady-state inference.
+  - Startup duration: Wall-clock time to ready state.
+  - `power_thermals.package_w`: Energy consumed during compilation burst vs. steady inference.
+
+### Scenario 3B: OpenVINO GPU Kernel Cache & `llama.cpp` SLM KV Prefix Caching & Quantization
+
+* **Target Engine:** Intel Arc 140V Xe2-LPG GPU (Vulkan & Level Zero / SYCL backends).
+* **Models:** `Gemma 4 E2B` (~3.1 GB) & `Gemma 4 E4B` (~5.0 GB), `Whisper` tiers on GPU.
+* **Evaluation Dimensions:**
+  1. **OpenVINO GPU Level Zero Persistent Cache (`Whisper` on Arc 140V):**
+     - Compare cold OpenCL/Level Zero SPIR-V JIT compilation (observed: 2.6s for base, 15.2s for turbo) against warm loading with `core.set_property("GPU", {"CACHE_DIR": ...})` (target: <280 ms).
+  2. **`llama.cpp` Cold Disk Read vs. Warm Standby Cache vs. `PrefetchVirtualMemory`:**
+     - Test cold launch with `--load-mode none` (`--no-mmap`) vs. `--load-mode mmap` cold vs. warm file cache vs. Win32 `PrefetchVirtualMemory`.
+     - Evaluate `--load-mode mmap+mlock` (`--mlock`) to confirm model pages remain locked against OS working set eviction under memory pressure.
+  3. **System-Prompt KV Prefix Caching & Slot Pre-Warming:**
+     - Configure `--slot-save-path`, `--slot-prompt-similarity 0.10`, and pre-evaluate the 400-token Device Commander system prompt + FunctionGemma tool definitions at server startup.
+     - Measure user-turn prefill latency drop from ~400 ms down to ~15 ms (delta token prefill).
+  4. **UMA Bandwidth Optimization (FlashAttention + `q8_0` KV Quantization):**
+     - Compare default FP16 KV cache (`-ctk f16 -ctv f16`) against quantized INT8 KV cache (`-ctk q8_0 -ctv q8_0`) and FlashAttention (`-fa`).
+     - Quantify KV cache memory footprint reduction (512 MB $\to$ 256 MB on context 2048) and measure decode throughput gain (tok/s) under concurrent NPU memory traffic.
+* **Telemetry Verification Focus:**
+  - `gpu.compute_pct`: Compute shader utilization during cold vs. warm prefill.
+  - `gpu.shared_memory_used_mb`: Accurate tracking of KV cache footprint under FP16 vs. Q8_0.
+  - `loopback.llama_server_listening` and TTFT (Time-to-First-Token).
+
+### Scenario 3C: STT/TTS ONNX Offline Graph Serialization, Arena Warmup & Pre-Synthesized Caching
+
+* **Target Engine:** Host CPU (Lion Cove P-cores `C0..C3` vs. Skymont LP-E cores `C4..C7`).
+* **Models:** `Moonshine Tiny` & `Base` STT, `Piper en_GB-alan-medium` VITS TTS.
+* **Evaluation Dimensions:**
+  1. **Offline Graph Optimization Serialization (`optimized_model_filepath`):**
+     - Measure initialization time of unoptimized ONNX model with `ORT_ENABLE_ALL` (runtime LayerNorm, Gelu, and MatMul-Add fusion: 380–620 ms).
+     - Pre-serialize optimized graph to disk (`..._opt.onnx`) and benchmark subsequent initialization with `ORT_DISABLE_ALL` (target: <35 ms).
+  2. **Memory Arena & Execution Step Warmup:**
+     - Evaluate `enable_cpu_mem_arena = True` and `enable_mem_pattern = True`.
+     - Measure cold first-inference latency vs. warm second-inference latency after running a 1-frame dummy audio tensor (`np.zeros((1, 16000))`) at service boot to pre-fault pages and spin up worker threads.
+  3. **Piper VITS Voice Preloading vs. Pre-Synthesized Reflex Cache vs. Streaming TTS:**
+     - **Cold Process Spawn:** `piper.exe` invocation per phrase (observed: 1,800–2,500 ms).
+     - **Warm Persistent Session:** Preloaded `InferenceSession` + JSON phoneme map kept in RAM (observed: 140–180 ms for 15-word phrase).
+     - **Pre-Synthesized Reflex Cache:** Pre-rendering 50 standard Device Commander confirmation phrases into RAM PCM buffers (target: **0 ms synthesis / <10 ms audio start**).
+     - **Chunked Streaming Overlapped TTS:** Synthesizing the first sentence clause while SLM generates remaining tokens (target: 60–85 ms to audio start).
+  4. **Thread Director & LP-E Core Placement:**
+     - Verify OpenVINO `SCHEDULING_CORE_TYPE = "ECORE_ONLY"` and ORT thread affinity to Skymont LP-E cores (`C4..C7`), confirming 12.9% power reduction with zero real-time degradation.
+* **Telemetry Verification Focus:**
+  - `cpu.skymont_lpe_load_pct` vs. `cpu.lion_cove_p_load_pct`: Proving zero P-core pollution by background audio threads.
+  - TTFA (Time-to-First-Audio) latency across cold, warm, pre-rendered, and streamed modes.
+
+### Scenario 3D: End-to-End Target Voice Workflows: Cold vs. Warm Optimized Comparison
+
+Scenario 3D executes two complete, real-world Device Commander end-to-end voice workflows under both **Cold (Unoptimized)** and **Warm (Fully Optimized)** configurations to quantify end-to-end user-perceived responsiveness:
+
+#### Workflow 1: Device Control / Reflex Turn (Local Edge Control)
+```
+[User Speech Audio (5s)]
+         │
+         ▼
+[Whisper / Moonshine STT]  ──►  [FunctionGemma-270M Intent NPU]  ──►  [Piper Status TTS / Preloaded Audio]
+  (NPU or Skymont LP-E)               (Intel AI Boost NPU 4)                 (Skymont LP-E Audio Island)
+```
+* **Cold Unoptimized Configuration:**
+  - Moonshine unoptimized ONNX loaded cold from disk.
+  - FunctionGemma NPU un-cached (cold VCL JIT compile).
+  - Piper cold process spawn.
+* **Warm Optimized Configuration:**
+  - Moonshine pre-optimized ONNX with warmed memory arena on LP-E cores.
+  - FunctionGemma pre-compiled `.blob` loaded from cache into NPU.
+  - Pre-synthesized reflex audio buffer emitted directly from RAM (<10 ms).
+* **Target Latency:** Cold > 24.0s $\to$ **Warm < 0.25s end-to-end**!
+
+#### Workflow 2: Generative Assistance Turn (Local SLM Reasoning)
+```
+[User Speech Audio (5s)]
+         │
+         ▼
+[Whisper-turbo / Moonshine]  ──►  [Gemma 4 E2B / E4B on Arc 140V]  ──►  [Sentence-Streamed Piper TTS]
+       (NPU 4)                      (Vulkan + Warmed System KV)           (Overlapped on Skymont LP-E)
+```
+* **Cold Unoptimized Configuration:**
+  - Cold GPU Level Zero/Vulkan kernel compilation + cold GGUF mmap page faults.
+  - Full system prompt prefill on every turn without KV cache persistence.
+  - Full TTS synthesis initiated only after complete SLM token generation finishes.
+* **Warm Optimized Configuration:**
+  - Pre-warmed system prompt KV prefix in GPU slot (`--slot-save-path`).
+  - FlashAttention (`-fa`) + quantized KV cache (`-ctk q8_0 -ctv q8_0`).
+  - Sentence-chunked streaming TTS overlapped with token generation.
+* **Target Latency:** Cold TTFA > 8.0s $\to$ **Warm TTFA < 0.65s**!
+
+---
+
+### Scenario 3E: Hardware & Driver [LIMITATION MARKER] Verification Matrix
+
+This matrix establishes the non-negotiable boundaries of the LattePanda Mu Ultra (Intel Core Ultra 7 256V Lunar Lake) hardware platform. Each limitation represents a physical, silicon, or driver constraint that cannot be eliminated in software, alongside its observable telemetry signature in `mutop-ai` and the required operational mitigation:
+
+| `[LIMITATION MARKER]` Identifier | Physical / Driver Root Cause | Manifestation Under Workload | Telemetry Signature in `mutop-ai` | Required Operational Mitigation |
+|:---|:---|:---|:---|:---|
+| **`[LIMITATION MARKER: UMA_MEMORY_BANDWIDTH_136GBPS]`** | 128-bit dual-channel LPDDR5X-8533 MoP provides theoretical maximum of 136.5 GB/s shared across CPU, GPU, and NPU. | Arc 140V generating tokens on Gemma 4 E4B consumes ~135 GB/s burst bandwidth; concurrent NPU batch embeddings or heavy CPU RAM copies throttle GPU decode rate by 15–30%. | `gpu.compute_pct` high while `tok/s` drops; `power_thermals.dram_w` peaks near 2.5 W; DRAM bandwidth contention counter trips. | Quantize GPU KV cache (`-ctk q8_0 -ctv q8_0`); enable FlashAttention (`-fa`); serialize heavy NPU batch embeddings to avoid overlapping active GPU decode bursts. |
+| **`[LIMITATION MARKER: PHYSICAL_MOP_CAPACITY_16GB]`** | 16 GB LPDDR5X is integrated directly onto package (Memory-on-Package). Silicon cannot be expanded or upgraded. | Attempting to hold operating system + Gemma 4 E4B (5.0 GB) + Whisper Medium (1.5 GB) + FunctionGemma (0.6 GB) + EmbeddingGemma (0.5 GB) + KV caches exhausts RAM. | `memory.in_use_phys_mb` approaches 15,600 MB; `memory.avail_phys_mb` < 800 MB; Windows triggers aggressive standby trimming and commit charge paging. | Enforce mutual exclusion: do not host Gemma 4 E4B and Whisper Medium concurrently; swap models or use smaller tiers (`E2B` + `Whisper-base`/`turbo`). |
+| **`[LIMITATION MARKER: DXCORE_MCDM_SHARED_APERTURE_9156MB]`** | Windows WDDM 3.2 sets maximum shared compute aperture for GPU + NPU combined at 9,156 MB (~57% of physical RAM). | Total allocated video memory ($\text{VRAM}_{\text{GPU}} + \text{VRAM}_{\text{NPU}}$) exceeding 9,156 MB fails with Win32 `E_OUTOFMEMORY` / `DXGI_ERROR_OUT_OF_MEMORY` or forces driver page eviction. | `gpu.shared_memory_used_mb` + `npu.shared_memory_used_mb` exceeds 8,200 MB; `uma_memory_pressure_near_budget` AI diagnostic rule trips. | Implement dynamic VRAM budget manager: track shared aperture in `mutop-ai` before spawning model processes; reject model loads if projected footprint exceeds 8,000 MB. |
+| **`[LIMITATION MARKER: CARRIER_PL1_POWER_28W]`** | LattePanda Mu carrier board BIOS and 5V PWM active blower fan enforce a long-duration sustained power limit (PL1) of 28 W. | Driving Arc 140V (peak 20 W), NPU 4 (peak 4.5 W), and CPU cores (peak 15 W) simultaneously demands >39.5 W, which triggers hardware RAPL power clamp. | `power_thermals.package_w` clamps at 26.5–28.0 W; `gpu_or_cpu_power_throttling` rule trips; GPU clock frequency drops from 1.95 GHz to 1.4–1.6 GHz. | Offload lightweight audio (STT/TTS) to Skymont LP-E cores (low-power island at <4W); cap GPU batch concurrency to maintain package power within 18–22W envelope. |
+| **`[LIMITATION MARKER: NPU_DYNAMIC_SHAPE_REJECTION_0x78000004]`** | Intel AI Boost NPU 4 neural compute engine utilizes fixed-size scratchpad SRAM tiles and static DMA descriptors; cannot compile dynamic tensors (`[-1, -1]`). | Passing unbounded dynamic sequence lengths to NPU causes VCL compiler rejection with error code `0x78000004` (`ZE_RESULT_ERROR_INVALID_ARGUMENT`) or silent CPU fallback. | NPU compute node utilization drops to 0.0%; CPU load spikes unexpectedly; `llm_worker_on_skymont_lpe_cores` or high CPU core usage observed. | Pre-reshape all NPU models statically offline (`model.reshape({...})`); compile discrete static shape buckets (`[1, 64]`, `[1, 128]`, `[4, 512]`); pad inputs to bucket size. |
+| **`[LIMITATION MARKER: VCL_ABI_DRIVER_COUPLING]`** | Cached OpenVINO `.blob` files embed explicit compiler build hashes (`ie_version`) and VCL compiler ABI versions (`NPU_DRIVER_VERSION = 1005540`). | Updating the Intel NPU MCDM driver via Windows Update or upgrading OpenVINO invalidates existing `.blob` files in `CACHE_DIR`, causing unexpected 22s cold recompilation. | Sudden 22s startup delay on previously warm models; `CACHE_DIR` logs cache invalidation warnings; `npu.utilization_pct` shows compilation burst. | Implement a post-update background precompilation maintenance service that detects driver version changes and re-generates `.blob` caches during system idle. |
+| **`[LIMITATION MARKER: GENAI_SUBGRAPH_PARTITIONING_OVERHEAD]`** | In `openvino_genai.LLMPipeline`, token sampling and KV eviction run on host CPU while neural tensor ops dispatch to NPU over UMA bus. | Per-token synchronization latency over PCIe/UMA introduces host CPU dispatch overhead, capping NPU autoregressive generation speed at ~12–18 tok/s despite high compute TOPS. | `npu.utilization_pct` displays sawtooth pattern rather than flat 100%; CPU thread usage alternates with NPU bursts on every token. | Use NPU primarily for prompt prefill, tool-call intent classification (`FunctionGemma`), and batch vector embeddings; route heavy autoregressive text generation to Arc 140V GPU. |
+
+---
+
+## 5. Telemetry Field Verification Matrix
 
 | Telemetry Field in `MutopSnapshot` | Source API on Windows 11 | Phase 1 Isolated Target | Phase 2 Concurrent Target | Invariant / Boundary Condition |
 | :--- | :--- | :--- | :--- | :--- |
@@ -258,13 +395,13 @@ Verify the rule engine correctly trips under contention:
 | `power_thermals.core_pp0_w` | RAPL PP0 (CPU cores) | 1.0–15.0 W | 10.0–20.0 W | $\le P_{\text{PKG}}$ |
 | `power_thermals.gpu_pp1_w` | RAPL PP1 (Arc GPU) | 0.0–16.0 W | 8.0–16.0 W | $\le P_{\text{PKG}}$ |
 | `power_thermals.dram_w` | RAPL DRAM (MoP) | 0.05–1.2 W | 0.8–2.5 W | Increases with memory bandwidth |
-| `power_thermals.cpu_package_dts_c` | MSR `0x1B1` via PawnIO | 40.0–65.0 °C | 65.0–88.0 °C | Max junction TjMax = 100°C |
+| `power_thermals.cpu_package_dts_c` | MSR `0x1B1` via PawnIO | 40.0–65.0 °C | 65.0–88.0 °C | Max junction TjMax = 105°C |
 | `power_thermals.cpu_fan_rpm` | ITE IT8613E via PawnIO | 2,200–2,800 RPM | 3,000–5,300 RPM | 5V PWM active fan response |
 | `timing.timer_resolution` | `NtQueryTimerResolution` | 0.5–1.0 ms (active) | 0.5–1.0 ms | Must not drift to 15.6 ms |
 
 ---
 
-## 5. Benchmark Orchestration & Phase Marker IPC Protocol
+## 6. Benchmark Orchestration & Phase Marker IPC Protocol
 
 To capture precise statistical interval summaries for each scenario without modifying AI engine internals, `mutop-ai` supports external phase marker injection via `--mark-file <path>`.
 
@@ -350,7 +487,7 @@ MARKER PHASES & INTERVAL PROFILING (16 intervals)
 
 ---
 
-## 6. Execution Safety & Board Occupancy Policy
+## 7. Execution Safety & Board Occupancy Policy
 
 > [!CAUTION]
 > **SAFETY GATE: DO NOT RUN BENCHMARK WORKLOADS ON `mu` WITHOUT EXPLICIT USER APPROVAL.**
