@@ -1,0 +1,42 @@
+{
+  "scenario": "2B_sustained_tri_accelerator_stress_60s",
+  "workload_stats": {
+    "gpu": {
+      "model": "Gemma 4 E4B Q4_K_M (Vulkan)",
+      "completed_queries": 8,
+      "total_generated_tokens": 1024,
+      "avg_query_sec": 8.211
+    },
+    "npu": {
+      "models": "EmbeddingGemma-300M [4, 512] + FunctionGemma-270M INT8",
+      "completed_batches_b4_512": 44,
+      "total_embedded_docs": 176,
+      "completed_fg_intent_queries": 44,
+      "avg_loop_ms": 1369.2
+    },
+    "cpu": {
+      "models": "Moonshine Base STT + Piper en_GB-alan-medium TTS",
+      "completed_stt_transcriptions_10s": 27,
+      "avg_stt_sec": 0.505,
+      "completed_tts_syntheses_45words": 27,
+      "avg_tts_sec": 1.762
+    }
+  },
+  "telemetry": {
+    "power_min_w": 2.41,
+    "power_median_w": 21.23,
+    "power_max_w": 26.46,
+    "fan_median_rpm": 4167,
+    "fan_max_rpm": 5720,
+    "cpu_total_median_pct": 51.0,
+    "cpu_p_core_median_pct": 3.8,
+    "cpu_lpe_core_median_pct": 100.0,
+    "gpu_median_pct": 81.9,
+    "gpu_max_pct": 100.1,
+    "cpu_temp_median_c": 57.0,
+    "cpu_temp_max_c": 81.0,
+    "npu_gpu_active_share_pct": 68.5,
+    "intervals": []
+  },
+  "log_file": "C:\\develop\\mutop\\logs\\scenario_2b_sustained_stress.log"
+}

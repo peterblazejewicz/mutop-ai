@@ -1,0 +1,140 @@
+{
+  "scenario": "2A_interactive_voice_turn_tri_engine",
+  "turns": [
+    {
+      "turn": 1,
+      "total_turn_sec": 0.877,
+      "gpu_tok_s": 25.61,
+      "gpu_latency_sec": 0.518,
+      "npu_latency_ms": 874.0,
+      "npu_intent_ms": 862.2,
+      "npu_embed_ms": 11.8,
+      "cpu_stt_ms": 207.7,
+      "cpu_tts_ms": 561.7
+    },
+    {
+      "turn": 2,
+      "total_turn_sec": 0.897,
+      "gpu_tok_s": 23.74,
+      "gpu_latency_sec": 0.6,
+      "npu_latency_ms": 893.6,
+      "npu_intent_ms": 883.2,
+      "npu_embed_ms": 10.4,
+      "cpu_stt_ms": 191.0,
+      "cpu_tts_ms": 433.3
+    },
+    {
+      "turn": 3,
+      "total_turn_sec": 0.841,
+      "gpu_tok_s": 26.35,
+      "gpu_latency_sec": 0.445,
+      "npu_latency_ms": 839.4,
+      "npu_intent_ms": 830.2,
+      "npu_embed_ms": 9.2,
+      "cpu_stt_ms": 89.8,
+      "cpu_tts_ms": 353.5
+    },
+    {
+      "turn": 4,
+      "total_turn_sec": 0.621,
+      "gpu_tok_s": 25.37,
+      "gpu_latency_sec": 0.37,
+      "npu_latency_ms": 530.7,
+      "npu_intent_ms": 520.3,
+      "npu_embed_ms": 10.4,
+      "cpu_stt_ms": 147.1,
+      "cpu_tts_ms": 468.5
+    },
+    {
+      "turn": 5,
+      "total_turn_sec": 0.857,
+      "gpu_tok_s": 26.55,
+      "gpu_latency_sec": 0.431,
+      "npu_latency_ms": 850.4,
+      "npu_intent_ms": 841.4,
+      "npu_embed_ms": 9.1,
+      "cpu_stt_ms": 268.9,
+      "cpu_tts_ms": 277.6
+    },
+    {
+      "turn": 6,
+      "total_turn_sec": 0.851,
+      "gpu_tok_s": 24.69,
+      "gpu_latency_sec": 0.477,
+      "npu_latency_ms": 848.1,
+      "npu_intent_ms": 839.0,
+      "npu_embed_ms": 9.0,
+      "cpu_stt_ms": 97.9,
+      "cpu_tts_ms": 297.9
+    },
+    {
+      "turn": 7,
+      "total_turn_sec": 0.85,
+      "gpu_tok_s": 26.3,
+      "gpu_latency_sec": 0.468,
+      "npu_latency_ms": 845.7,
+      "npu_intent_ms": 835.6,
+      "npu_embed_ms": 10.1,
+      "cpu_stt_ms": 102.7,
+      "cpu_tts_ms": 452.8
+    },
+    {
+      "turn": 8,
+      "total_turn_sec": 0.879,
+      "gpu_tok_s": 25.42,
+      "gpu_latency_sec": 0.538,
+      "npu_latency_ms": 877.1,
+      "npu_intent_ms": 868.1,
+      "npu_embed_ms": 8.9,
+      "cpu_stt_ms": 104.8,
+      "cpu_tts_ms": 427.5
+    },
+    {
+      "turn": 9,
+      "total_turn_sec": 0.859,
+      "gpu_tok_s": 25.58,
+      "gpu_latency_sec": 0.507,
+      "npu_latency_ms": 857.1,
+      "npu_intent_ms": 847.1,
+      "npu_embed_ms": 10.0,
+      "cpu_stt_ms": 107.3,
+      "cpu_tts_ms": 318.1
+    },
+    {
+      "turn": 10,
+      "total_turn_sec": 0.87,
+      "gpu_tok_s": 24.43,
+      "gpu_latency_sec": 0.443,
+      "npu_latency_ms": 867.7,
+      "npu_intent_ms": 858.5,
+      "npu_embed_ms": 9.2,
+      "cpu_stt_ms": 117.0,
+      "cpu_tts_ms": 566.6
+    }
+  ],
+  "averages": {
+    "avg_turn_sec": 0.84,
+    "avg_gpu_tok_s": 25.4,
+    "avg_npu_ms": 828.4,
+    "avg_npu_intent_ms": 818.6,
+    "avg_npu_embed_ms": 9.8,
+    "avg_stt_ms": 143.4,
+    "avg_tts_ms": 415.8
+  },
+  "telemetry": {
+    "power_min_w": 2.54,
+    "power_median_w": 5.66,
+    "power_max_w": 19.05,
+    "fan_median_rpm": 2778,
+    "fan_max_rpm": 5273,
+    "cpu_total_median_pct": 22.4,
+    "cpu_p_core_median_pct": 5.6,
+    "cpu_lpe_core_median_pct": 27.6,
+    "gpu_median_pct": 0.0,
+    "gpu_max_pct": 100.0,
+    "cpu_temp_median_c": 44.0,
+    "cpu_temp_max_c": 78.0,
+    "npu_gpu_active_share_pct": 39.9
+  },
+  "log_file": "C:\\develop\\mutop\\logs\\scenario_2a_voice_turn.log"
+}
