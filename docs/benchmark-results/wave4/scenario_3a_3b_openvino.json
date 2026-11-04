@@ -1,0 +1,166 @@
+{
+  "timestamp": "2026-11-05 00:38:12",
+  "hardware": "LattePanda Mu Ultra (Intel Core Ultra 7 256V / Lunar Lake)",
+  "openvino_version": "2026.4.1-22982-e213a147257-releases/2026/4",
+  "scenario_3a_part1_cold_vs_warm": {
+    "FunctionGemma-270M-INT8": {
+      "cold_compile_sec": 20.84,
+      "cold_turn1_ms": 763.77,
+      "cold_steady_ms": 321.08,
+      "warm_load_ms": 26241.47,
+      "warm_turn1_ms": 891.23,
+      "warm_steady_ms": 368.41,
+      "blob_size_mb": 593.93,
+      "speedup_load": 0.8
+    },
+    "EmbeddingGemma-300M": {
+      "cold_compile_sec": 26.55,
+      "cold_turn1_ms": 37.3,
+      "cold_steady_ms": 13.51,
+      "warm_load_ms": 748.83,
+      "warm_turn1_ms": 94.18,
+      "warm_steady_ms": 14.1,
+      "speedup_load": 35.5
+    },
+    "Whisper-base": {
+      "cold_compile_sec": 33.03,
+      "warm_load_ms": 5516.05,
+      "turn1_latency_ms": 237.34,
+      "turn2_latency_ms": 1663.7,
+      "speedup_load": 6.0
+    },
+    "Whisper-small": {
+      "cold_compile_sec": 91.51,
+      "warm_load_ms": 11423.85,
+      "turn1_latency_ms": 374.45,
+      "turn2_latency_ms": 217.97,
+      "speedup_load": 8.0
+    },
+    "Whisper-large-v3-turbo": {
+      "cold_compile_sec": 385.4,
+      "warm_load_ms": 8880.47,
+      "turn1_latency_ms": 1256.61,
+      "turn2_latency_ms": 417.05,
+      "speedup_load": 43.4
+    }
+  },
+  "scenario_3a_part2_weightless_blobs": {
+    "EmbeddingGemma-300M": {
+      "monolithic_blob_mb": 584.04,
+      "weightless_blob_mb": 6.62,
+      "size_reduction_factor": 88.2,
+      "warm_load_ms": 2198.83,
+      "turn1_latency_ms": 20.82,
+      "steady_latency_ms": 13.8
+    },
+    "FunctionGemma-270M-INT8": {
+      "monolithic_blob_mb": 612.41,
+      "weightless_blob_mb": 177.8,
+      "size_reduction_factor": 3.4,
+      "warm_load_ms": 2086.74,
+      "turn1_latency_ms": 670.14,
+      "steady_latency_ms": 366.12
+    }
+  },
+  "scenario_3a_part3_aot_import": {
+    "EmbeddingGemma-300M": {
+      "exported_blob_mb": 584.04,
+      "export_duration_ms": 1549.53,
+      "import_model_load_ms": 312.79,
+      "turn1_latency_ms": 28.74,
+      "steady_latency_ms": 12.97,
+      "frontend_bypass_savings_ms": 1274.01
+    }
+  },
+  "scenario_3a_part4_turbo_tuning": {
+    "default": {
+      "description": "NPU_TURBO=False, WORKLOAD_TYPE=DEFAULT",
+      "npu_turbo": false,
+      "workload_type": "DEFAULT",
+      "functiongemma_turn1_ms": 687.9,
+      "functiongemma_steady_ms": 318.92,
+      "embeddinggemma_turn1_ms": 97.4,
+      "embeddinggemma_steady_ms": 11.85,
+      "metrics": {
+        "power_min_w": 2.74,
+        "power_median_w": 3.55,
+        "power_p90_w": 9.92,
+        "power_max_w": 14.62,
+        "fan_median_rpm": 2935,
+        "fan_max_rpm": 3409,
+        "cpu_total_median_pct": 13.3,
+        "proc_cpu_median_pct": 12.2,
+        "cpu_temp_median_c": 44.0,
+        "cpu_temp_max_c": 76.0
+      }
+    },
+    "turbo": {
+      "description": "NPU_TURBO=True, WORKLOAD_TYPE=DEFAULT",
+      "npu_turbo": true,
+      "workload_type": "DEFAULT",
+      "functiongemma_turn1_ms": 618.39,
+      "functiongemma_steady_ms": 318.64,
+      "embeddinggemma_turn1_ms": 25.65,
+      "embeddinggemma_steady_ms": 8.34,
+      "metrics": {
+        "power_min_w": 2.82,
+        "power_median_w": 3.5,
+        "power_p90_w": 5.25,
+        "power_max_w": 14.73,
+        "fan_median_rpm": 2813,
+        "fan_max_rpm": 4720,
+        "cpu_total_median_pct": 13.5,
+        "proc_cpu_median_pct": 12.2,
+        "cpu_temp_median_c": 44.0,
+        "cpu_temp_max_c": 74.0
+      }
+    },
+    "efficient": {
+      "description": "NPU_TURBO=False, WORKLOAD_TYPE=EFFICIENT",
+      "npu_turbo": false,
+      "workload_type": "EFFICIENT",
+      "functiongemma_turn1_ms": 661.54,
+      "functiongemma_steady_ms": 322.43,
+      "embeddinggemma_turn1_ms": 94.32,
+      "embeddinggemma_steady_ms": 14.86,
+      "metrics": {
+        "power_min_w": 3.45,
+        "power_median_w": 6.97,
+        "power_p90_w": 14.32,
+        "power_max_w": 14.69,
+        "fan_median_rpm": 2974,
+        "fan_max_rpm": 3325,
+        "cpu_total_median_pct": 18.4,
+        "proc_cpu_median_pct": 8.8,
+        "cpu_temp_median_c": 47.0,
+        "cpu_temp_max_c": 76.0
+      }
+    }
+  },
+  "scenario_3b_part1_gpu_kernel_cache": {
+    "base": {
+      "cold_compile_sec": 2.61,
+      "warm_startup_ms": 649.01,
+      "turn1_latency_ms": 1007.42,
+      "turn2_latency_ms": 153.92,
+      "gpu_cache_total_mb": 149.78,
+      "speedup_factor": 4.0
+    },
+    "small": {
+      "cold_compile_sec": 10.31,
+      "warm_startup_ms": 2254.26,
+      "turn1_latency_ms": 927.48,
+      "turn2_latency_ms": 190.18,
+      "gpu_cache_total_mb": 623.84,
+      "speedup_factor": 4.6
+    },
+    "large-v3-turbo": {
+      "cold_compile_sec": 15.15,
+      "warm_startup_ms": 2260.36,
+      "turn1_latency_ms": 1014.75,
+      "turn2_latency_ms": 327.09,
+      "gpu_cache_total_mb": 2179.48,
+      "speedup_factor": 6.7
+    }
+  }
+}

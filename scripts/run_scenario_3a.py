@@ -314,12 +314,10 @@ def main() -> None:
                 cold_compile_sec = 385.4
                 print("  Using baseline Wave 2 cold compile time (385.4 s) for large-v3-turbo")
             else:
-                if os.path.exists(CACHE_TMP_DIR):
-                    shutil.rmtree(CACHE_TMP_DIR)
-                os.makedirs(CACHE_TMP_DIR, exist_ok=True)
+                cold_cache_dir = make_fresh_cold_dir()
                 print(f"  Compiling Whisper {tier} (Cold)...")
                 t0 = time.perf_counter()
-                cold_pipe = ov_genai.WhisperPipeline(model_dir, "NPU", CACHE_DIR=CACHE_TMP_DIR)
+                cold_pipe = ov_genai.WhisperPipeline(model_dir, "NPU", CACHE_DIR=cold_cache_dir)
                 cold_compile_sec = round(time.perf_counter() - t0, 2)
                 print(f"  Cold compile completed in {cold_compile_sec:.2f} s")
                 del cold_pipe
