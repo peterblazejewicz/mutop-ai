@@ -152,10 +152,11 @@ pub struct UmaMemorySnapshot {
     pub free_zero_mb: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum EffectivePowerMode {
     BatterySaver,
     BestPowerEfficiency,
+    #[default]
     Balanced,
     BestPerformance,
     Unknown,

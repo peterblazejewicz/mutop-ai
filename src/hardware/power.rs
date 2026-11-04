@@ -3,8 +3,18 @@
 
 use crate::hardware::pdh::win_pdh::PdhTelemetryState;
 use crate::snapshot::types::{EffectivePowerMode, PowerThermalSnapshot};
+#[cfg(windows)]
+use std::time::Duration;
+use std::time::Instant;
+
+#[derive(Default)]
+pub struct PowerCollectorState {
+    pub last_mode_poll: Option<Instant>,
+    pub cached_mode: EffectivePowerMode,
+}
 
 pub fn collect_power_thermal_snapshot(
+    state: &mut PowerCollectorState,
     pdh_state: Option<&PdhTelemetryState>,
     idle_baseline_w: f64,
     mock: bool,
@@ -14,10 +24,11 @@ pub fn collect_power_thermal_snapshot(
     }
     #[cfg(windows)]
     {
-        collect_windows_power_thermal(pdh_state, idle_baseline_w)
+        collect_windows_power_thermal(state, pdh_state, idle_baseline_w)
     }
     #[cfg(not(windows))]
     {
+        let _ = state;
         let _ = pdh_state;
         collect_linux_power_thermal(idle_baseline_w)
     }
@@ -86,6 +97,7 @@ extern "system" {
 
 #[cfg(windows)]
 fn collect_windows_power_thermal(
+    state: &mut PowerCollectorState,
     pdh_state: Option<&PdhTelemetryState>,
     idle_baseline_w: f64,
 ) -> PowerThermalSnapshot {
@@ -151,7 +163,15 @@ fn collect_windows_power_thermal(
         }
     }
 
-    let effective_power_mode = query_effective_power_mode();
+    let should_poll_mode = state
+        .last_mode_poll
+        .map(|t| t.elapsed() >= Duration::from_secs(2))
+        .unwrap_or(true);
+    if should_poll_mode {
+        state.cached_mode = query_effective_power_mode();
+        state.last_mode_poll = Some(Instant::now());
+    }
+    let effective_power_mode = state.cached_mode;
 
     let baseline = if idle_baseline_w > 0.0 {
         idle_baseline_w
@@ -184,33 +204,39 @@ fn collect_windows_power_thermal(
 }
 
 #[cfg(windows)]
-fn query_effective_power_mode() -> EffectivePowerMode {
-    #[repr(C)]
-    #[derive(Default, PartialEq, Eq)]
-    struct WinGuid {
-        data1: u32,
-        data2: u16,
-        data3: u16,
-        data4: [u8; 8],
-    }
+#[repr(C)]
+#[derive(Default, PartialEq, Eq)]
+struct WinGuid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
 
-    unsafe {
-        if let Ok(powrprof) = libloading::Library::new("powrprof.dll") {
-            type PowerGetEffectiveOverlaySchemeFn =
-                unsafe extern "system" fn(guid: *mut WinGuid) -> u32;
-            if let Ok(get_overlay) = powrprof
-                .get::<PowerGetEffectiveOverlaySchemeFn>(b"PowerGetEffectiveOverlayScheme\0")
-            {
-                let mut guid = WinGuid::default();
-                if get_overlay(&mut guid) == 0 {
-                    if guid.data1 == 0xDED574B5 {
-                        return EffectivePowerMode::BestPerformance;
-                    }
-                    if guid.data1 == 0x961CC777 {
-                        return EffectivePowerMode::BestPowerEfficiency;
-                    }
-                    return EffectivePowerMode::Balanced;
-                }
+#[cfg(windows)]
+fn query_effective_power_mode() -> EffectivePowerMode {
+    type PowerGetEffectiveOverlaySchemeFn = unsafe extern "system" fn(guid: *mut WinGuid) -> u32;
+
+    static FUNC: std::sync::OnceLock<Option<PowerGetEffectiveOverlaySchemeFn>> =
+        std::sync::OnceLock::new();
+
+    let func = FUNC.get_or_init(|| unsafe {
+        let lib = libloading::Library::new("powrprof.dll").ok()?;
+        let symbol: libloading::Symbol<PowerGetEffectiveOverlaySchemeFn> =
+            lib.get(b"PowerGetEffectiveOverlayScheme\0").ok()?;
+        let fn_ptr = *symbol;
+        std::mem::forget(lib);
+        Some(fn_ptr)
+    });
+
+    if let Some(get_overlay) = func {
+        let mut guid = WinGuid::default();
+        if unsafe { get_overlay(&mut guid) } == 0 {
+            if guid.data1 == 0xDED574B5 {
+                return EffectivePowerMode::BestPerformance;
+            }
+            if guid.data1 == 0x961CC777 {
+                return EffectivePowerMode::BestPowerEfficiency;
             }
         }
     }

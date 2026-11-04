@@ -349,3 +349,55 @@ pub mod win_dxgi {
         results
     }
 }
+
+#[cfg(not(windows))]
+pub mod not_win_dxgi {
+    #[repr(C)]
+    #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+    pub struct Luid {
+        pub low_part: u32,
+        pub high_part: i32,
+    }
+
+    impl Luid {
+        pub fn to_u64(&self) -> u64 {
+            ((self.high_part as u64) << 32) | (self.low_part as u64)
+        }
+
+        pub fn pdh_pattern(&self) -> String {
+            format!(
+                "luid_0x{:08x}_0x{:08x}",
+                self.high_part as u32, self.low_part
+            )
+        }
+
+        pub fn from_u64(val: u64) -> Self {
+            Self {
+                low_part: (val & 0xFFFF_FFFF) as u32,
+                high_part: ((val >> 32) & 0xFFFF_FFFF) as i32,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub struct AdapterInfo {
+        pub description: String,
+        pub vendor_id: u32,
+        pub device_id: u32,
+        pub luid: Luid,
+        pub shared_sys_mem_mb: u64,
+        pub dedicated_video_mem_mb: u64,
+        pub is_npu: bool,
+        pub is_gpu: bool,
+    }
+
+    pub fn enumerate_dxgi_adapters() -> Vec<AdapterInfo> {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+pub use win_dxgi::*;
+
+#[cfg(not(windows))]
+pub use not_win_dxgi::*;

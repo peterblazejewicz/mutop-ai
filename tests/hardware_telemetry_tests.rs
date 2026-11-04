@@ -258,16 +258,18 @@ fn test_individual_collectors() {
     let cpu = collect_cpu_snapshot(&mut cpu_state, true);
     assert_eq!(cpu.per_core_pct.len(), 8);
 
-    let npu = collect_npu_snapshot(None, true);
+    let npu = collect_npu_snapshot(&[], &[], None, true);
     assert_eq!(npu.npu_tops, 47);
 
-    let gpu = collect_gpu_snapshot(None, true);
+    let gpu = collect_gpu_snapshot(&[], &[], None, true);
     assert_eq!(gpu.gpu_tops, 64);
 
-    let power = collect_power_thermal_snapshot(None, 4.8, true);
+    let mut power_state = PowerCollectorState::default();
+    let power = collect_power_thermal_snapshot(&mut power_state, None, 4.8, true);
     assert!(power.package_w > 0.0);
 
-    let storage = collect_storage_snapshot(None, true);
+    let mut storage_state = StorageCollectorState::default();
+    let storage = collect_storage_snapshot(&mut storage_state, None, true);
     assert_eq!(storage.current_gen, 4);
 
     let mut net_state = NetworkCollectorState::default();
@@ -277,7 +279,16 @@ fn test_individual_collectors() {
     let timing = collect_timing_snapshot(true);
     assert_eq!(timing.crystal_hz, 38_400_000);
 
-    let procs = collect_tracked_processes(None, &["llama".to_string()], true, true);
+    let mut proc_state = ProcessesCollectorState::default();
+    let procs = collect_tracked_processes(
+        &mut proc_state,
+        &[],
+        &[],
+        None,
+        &["llama".to_string()],
+        true,
+        true,
+    );
     assert!(!procs.is_empty());
 }
 

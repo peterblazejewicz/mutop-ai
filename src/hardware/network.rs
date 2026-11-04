@@ -10,6 +10,11 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct NetworkCollectorState {
     pub prev_octets: HashMap<u32, (u64, u64, Instant)>,
+    pub interface_names: HashMap<u32, String>,
+    pub last_wifi_poll: Option<Instant>,
+    pub cached_wifi7: Option<Wifi7Snapshot>,
+    pub last_loopback_poll: Option<Instant>,
+    pub cached_loopback: Option<LoopbackAiSnapshot>,
 }
 
 pub fn collect_network_snapshot(
@@ -78,13 +83,37 @@ fn mock_network_snapshot() -> NetworkLoopbackSnapshot {
 #[cfg(windows)]
 fn collect_windows_network(state: &mut NetworkCollectorState) -> NetworkLoopbackSnapshot {
     let interfaces = query_windows_interfaces(state);
-    let wifi7 = query_windows_wifi7();
-    let loopback = query_windows_loopback();
+
+    let should_poll_wifi = state
+        .last_wifi_poll
+        .map(|t| t.elapsed() >= std::time::Duration::from_millis(1500))
+        .unwrap_or(true);
+    if should_poll_wifi {
+        state.cached_wifi7 = query_windows_wifi7();
+        state.last_wifi_poll = Some(Instant::now());
+    }
+
+    let should_poll_loopback = state
+        .last_loopback_poll
+        .map(|t| t.elapsed() >= std::time::Duration::from_millis(1500))
+        .unwrap_or(true);
+    if should_poll_loopback {
+        state.cached_loopback = Some(query_windows_loopback());
+        state.last_loopback_poll = Some(Instant::now());
+    }
 
     NetworkLoopbackSnapshot {
         interfaces,
-        wifi7,
-        loopback,
+        wifi7: state.cached_wifi7.clone(),
+        loopback: state.cached_loopback.clone().unwrap_or(LoopbackAiSnapshot {
+            llama_server_listening: false,
+            llama_server_port: 8080,
+            mcp_gateway_listening: false,
+            mcp_gateway_port: 50051,
+            active_loopback_connections: 0,
+            loopback_bytes_in: None,
+            loopback_bytes_out: None,
+        }),
     }
 }
 
@@ -108,8 +137,15 @@ fn query_windows_interfaces(state: &mut NetworkCollectorState) -> Vec<NetworkInt
             for row in rows {
                 // Filter for physical Ethernet (6) or Wi-Fi (71)
                 if row.Type == 6 || row.Type == 71 {
-                    let desc_len = row.Description.iter().position(|&c| c == 0).unwrap_or(256);
-                    let name = String::from_utf16_lossy(&row.Description[..desc_len]);
+                    let name = state
+                        .interface_names
+                        .entry(row.InterfaceIndex)
+                        .or_insert_with(|| {
+                            let desc_len =
+                                row.Description.iter().position(|&c| c == 0).unwrap_or(256);
+                            String::from_utf16_lossy(&row.Description[..desc_len])
+                        })
+                        .clone();
 
                     let oper_status = if row.OperStatus == 1 {
                         "Up".to_string()
@@ -162,107 +198,101 @@ fn query_windows_interfaces(state: &mut NetworkCollectorState) -> Vec<NetworkInt
 }
 
 #[cfg(windows)]
+#[repr(C)]
+struct WlanInterfaceInfo {
+    interface_guid: [u8; 16],
+    interface_description: [u16; 256],
+    is_state: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WlanInterfaceInfoList {
+    number_of_items: u32,
+    index: u32,
+    interface_info: [WlanInterfaceInfo; 1],
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct WlanRealtimeConnectionQuality {
+    dot11_phy_type: u32,
+    link_quality: u32,
+    rx_rate: u32,
+    tx_rate: u32,
+    is_mlo_connection: u32,
+}
+
+#[cfg(windows)]
+#[link(name = "wlanapi")]
+extern "system" {
+    fn WlanOpenHandle(
+        client_version: u32,
+        reserved: *const std::ffi::c_void,
+        negotiated_version: *mut u32,
+        client_handle: *mut *mut std::ffi::c_void,
+    ) -> u32;
+
+    fn WlanCloseHandle(
+        client_handle: *mut std::ffi::c_void,
+        reserved: *const std::ffi::c_void,
+    ) -> u32;
+
+    fn WlanEnumInterfaces(
+        client_handle: *mut std::ffi::c_void,
+        reserved: *const std::ffi::c_void,
+        interface_list: *mut *mut WlanInterfaceInfoList,
+    ) -> u32;
+
+    fn WlanQueryInterface(
+        client_handle: *mut std::ffi::c_void,
+        interface_guid: *const u8,
+        opcode: u32,
+        reserved: *const std::ffi::c_void,
+        data_size: *mut u32,
+        data: *mut *mut std::ffi::c_void,
+        opcode_type: *mut u32,
+    ) -> u32;
+
+    fn WlanFreeMemory(memory: *mut std::ffi::c_void);
+}
+
+#[cfg(windows)]
 fn query_windows_wifi7() -> Option<Wifi7Snapshot> {
     unsafe {
-        let wlan = libloading::Library::new("wlanapi.dll").ok()?;
-
-        type WlanOpenHandleFn = unsafe extern "system" fn(
-            dw_client_version: u32,
-            p_reserved: *const std::ffi::c_void,
-            pdw_negotiated_version: *mut u32,
-            ph_client_handle: *mut *mut std::ffi::c_void,
-        ) -> u32;
-
-        type WlanCloseHandleFn = unsafe extern "system" fn(
-            h_client_handle: *mut std::ffi::c_void,
-            p_reserved: *const std::ffi::c_void,
-        ) -> u32;
-
-        type WlanEnumInterfacesFn = unsafe extern "system" fn(
-            h_client_handle: *mut std::ffi::c_void,
-            p_reserved: *const std::ffi::c_void,
-            pp_interface_list: *mut *mut WlanInterfaceInfoList,
-        ) -> u32;
-
-        type WlanQueryInterfaceFn = unsafe extern "system" fn(
-            h_client_handle: *mut std::ffi::c_void,
-            p_interface_guid: *const [u8; 16],
-            op_code: u32,
-            p_reserved: *const std::ffi::c_void,
-            pdw_data_size: *mut u32,
-            pp_data: *mut *mut std::ffi::c_void,
-            p_wlan_opcode_value_type: *mut u32,
-        ) -> u32;
-
-        type WlanFreeMemoryFn = unsafe extern "system" fn(p_memory: *mut std::ffi::c_void);
-
-        #[repr(C)]
-        struct WlanInterfaceInfo {
-            interface_guid: [u8; 16],
-            interface_description: [u16; 256],
-            is_state: u32,
-        }
-
-        #[repr(C)]
-        struct WlanInterfaceInfoList {
-            number_of_items: u32,
-            index: u32,
-            interface_info: [WlanInterfaceInfo; 1],
-        }
-
-        #[repr(C)]
-        #[derive(Clone, Copy, Default)]
-        struct WlanRealtimeConnectionQuality {
-            dot11_phy_type: u32,
-            link_quality: u32,
-            rx_rate: u32,
-            tx_rate: u32,
-            is_mlo_connection: u32,
-        }
-
-        let open_handle: libloading::Symbol<WlanOpenHandleFn> =
-            wlan.get(b"WlanOpenHandle\0").ok()?;
-        let close_handle: libloading::Symbol<WlanCloseHandleFn> =
-            wlan.get(b"WlanCloseHandle\0").ok()?;
-        let enum_interfaces: libloading::Symbol<WlanEnumInterfacesFn> =
-            wlan.get(b"WlanEnumInterfaces\0").ok()?;
-        let query_interface: libloading::Symbol<WlanQueryInterfaceFn> =
-            wlan.get(b"WlanQueryInterface\0").ok()?;
-        let free_memory: libloading::Symbol<WlanFreeMemoryFn> =
-            wlan.get(b"WlanFreeMemory\0").ok()?;
-
         let mut client_version = 0u32;
         let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
-        if open_handle(2, std::ptr::null(), &mut client_version, &mut handle) != 0
+        if WlanOpenHandle(2, std::ptr::null(), &mut client_version, &mut handle) != 0
             || handle.is_null()
         {
             return None;
         }
 
         let mut list_ptr: *mut WlanInterfaceInfoList = std::ptr::null_mut();
-        if enum_interfaces(handle, std::ptr::null(), &mut list_ptr) != 0 || list_ptr.is_null() {
-            close_handle(handle, std::ptr::null());
+        if WlanEnumInterfaces(handle, std::ptr::null(), &mut list_ptr) != 0 || list_ptr.is_null() {
+            WlanCloseHandle(handle, std::ptr::null());
             return None;
         }
 
         let count = (*list_ptr).number_of_items;
         if count == 0 {
-            free_memory(list_ptr as *mut _);
-            close_handle(handle, std::ptr::null());
+            WlanFreeMemory(list_ptr as *mut _);
+            WlanCloseHandle(handle, std::ptr::null());
             return None;
         }
 
         let first_guid = (*list_ptr).interface_info[0].interface_guid;
-        free_memory(list_ptr as *mut _);
+        WlanFreeMemory(list_ptr as *mut _);
 
         let mut rssi_data_size = 0u32;
         let mut rssi_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut opcode_type = 0u32;
         let mut rssi_dbm = -60;
 
-        if query_interface(
+        if WlanQueryInterface(
             handle,
-            &first_guid,
+            first_guid.as_ptr(),
             0x10000102,
             std::ptr::null(),
             &mut rssi_data_size,
@@ -272,16 +302,16 @@ fn query_windows_wifi7() -> Option<Wifi7Snapshot> {
             && !rssi_ptr.is_null()
         {
             rssi_dbm = *(rssi_ptr as *const i32);
-            free_memory(rssi_ptr);
+            WlanFreeMemory(rssi_ptr);
         }
 
         let mut qual_data_size = 0u32;
         let mut qual_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut quality = WlanRealtimeConnectionQuality::default();
 
-        if query_interface(
+        if WlanQueryInterface(
             handle,
-            &first_guid,
+            first_guid.as_ptr(),
             19,
             std::ptr::null(),
             &mut qual_data_size,
@@ -291,10 +321,10 @@ fn query_windows_wifi7() -> Option<Wifi7Snapshot> {
             && !qual_ptr.is_null()
         {
             quality = *(qual_ptr as *const WlanRealtimeConnectionQuality);
-            free_memory(qual_ptr);
+            WlanFreeMemory(qual_ptr);
         }
 
-        close_handle(handle, std::ptr::null());
+        WlanCloseHandle(handle, std::ptr::null());
 
         let is_eht = quality.dot11_phy_type == 10;
         let phy_type = if is_eht {

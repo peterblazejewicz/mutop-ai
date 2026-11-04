@@ -25,12 +25,12 @@ pub use memory::collect_memory_snapshot;
 pub use network::{collect_network_snapshot, NetworkCollectorState};
 pub use npu::collect_npu_snapshot;
 pub use pdh::win_pdh::PdhTelemetryState;
-pub use power::collect_power_thermal_snapshot;
-pub use processes::collect_tracked_processes;
-pub use storage::collect_storage_snapshot;
+pub use power::{collect_power_thermal_snapshot, PowerCollectorState};
+pub use processes::{collect_tracked_processes, ProcessesCollectorState};
+pub use storage::{collect_storage_snapshot, StorageCollectorState};
 pub use timing::collect_timing_snapshot;
 
-use crate::snapshot::types::MutopSnapshot;
+use crate::snapshot::types::{CoreMicroarch, HostInfo, MutopSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CollectorMode {
@@ -40,8 +40,13 @@ pub enum CollectorMode {
 
 pub struct HardwareCollector {
     pub mode: CollectorMode,
+    pub host_info: HostInfo,
     pub cpu_state: CpuCollectorState,
     pub network_state: NetworkCollectorState,
+    pub storage_state: StorageCollectorState,
+    pub power_state: PowerCollectorState,
+    pub processes_state: ProcessesCollectorState,
+    pub adapters: Vec<crate::hardware::dxgi::AdapterInfo>,
     pub pdh_state: Option<PdhTelemetryState>,
     pub idle_baseline_w: f64,
     pub last_tick_instant: Option<std::time::Instant>,
@@ -49,10 +54,24 @@ pub struct HardwareCollector {
 
 impl HardwareCollector {
     pub fn new() -> Self {
+        let is_mock = false;
+        #[allow(unused_mut)]
+        let mut cpu_state = CpuCollectorState::default();
+        #[cfg(windows)]
+        {
+            cpu_state.topology = cpu::discover_windows_core_topology(8);
+        }
+        let adapters = crate::hardware::dxgi::enumerate_dxgi_adapters();
+        let host_info = get_host_info(is_mock);
         Self {
             mode: CollectorMode::Live,
-            cpu_state: CpuCollectorState::default(),
+            host_info,
+            cpu_state,
             network_state: NetworkCollectorState::default(),
+            storage_state: StorageCollectorState::default(),
+            power_state: PowerCollectorState::default(),
+            processes_state: ProcessesCollectorState::default(),
+            adapters,
             pdh_state: PdhTelemetryState::new(),
             idle_baseline_w: 4.8,
             last_tick_instant: None,
@@ -60,10 +79,30 @@ impl HardwareCollector {
     }
 
     pub fn new_mock() -> Self {
+        let is_mock = true;
+        let cpu_state = CpuCollectorState {
+            topology: vec![
+                CoreMicroarch::LionCoveP,
+                CoreMicroarch::LionCoveP,
+                CoreMicroarch::LionCoveP,
+                CoreMicroarch::LionCoveP,
+                CoreMicroarch::SkymontLpE,
+                CoreMicroarch::SkymontLpE,
+                CoreMicroarch::SkymontLpE,
+                CoreMicroarch::SkymontLpE,
+            ],
+            ..Default::default()
+        };
+        let host_info = get_host_info(is_mock);
         Self {
             mode: CollectorMode::Mock,
-            cpu_state: CpuCollectorState::default(),
+            host_info,
+            cpu_state,
             network_state: NetworkCollectorState::default(),
+            storage_state: StorageCollectorState::default(),
+            power_state: PowerCollectorState::default(),
+            processes_state: ProcessesCollectorState::default(),
+            adapters: Vec::new(),
             pdh_state: None,
             idle_baseline_w: 4.8,
             last_tick_instant: None,
@@ -93,23 +132,49 @@ impl HardwareCollector {
             }
         }
 
-        let host = get_host_info(is_mock);
+        let host = self.host_info.clone();
         let cpu = collect_cpu_snapshot(&mut self.cpu_state, is_mock);
-        let npu = collect_npu_snapshot(self.pdh_state.as_ref(), is_mock);
-        let gpu = collect_gpu_snapshot(self.pdh_state.as_ref(), is_mock);
+        let engine_items = if !is_mock {
+            self.pdh_state
+                .as_ref()
+                .map(|p| p.read_array("gpu_engines"))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let npu = collect_npu_snapshot(
+            &self.adapters,
+            &engine_items,
+            self.pdh_state.as_ref(),
+            is_mock,
+        );
+        let gpu = collect_gpu_snapshot(
+            &self.adapters,
+            &engine_items,
+            self.pdh_state.as_ref(),
+            is_mock,
+        );
         let memory = collect_memory_snapshot(
             gpu.shared_memory_used_mb,
             npu.shared_memory_used_mb,
             is_mock,
         );
-        let power_thermals =
-            collect_power_thermal_snapshot(self.pdh_state.as_ref(), self.idle_baseline_w, is_mock);
-        let storage = collect_storage_snapshot(self.pdh_state.as_ref(), is_mock);
+        let power_thermals = collect_power_thermal_snapshot(
+            &mut self.power_state,
+            self.pdh_state.as_ref(),
+            self.idle_baseline_w,
+            is_mock,
+        );
+        let storage =
+            collect_storage_snapshot(&mut self.storage_state, self.pdh_state.as_ref(), is_mock);
         let network = collect_network_snapshot(&mut self.network_state, is_mock);
         let timing = collect_timing_snapshot(is_mock);
 
         let tracked_processes = if !tracked_patterns.is_empty() || is_mock {
             let procs = collect_tracked_processes(
+                &mut self.processes_state,
+                &self.adapters,
+                &self.cpu_state.topology,
                 self.pdh_state.as_ref(),
                 tracked_patterns,
                 include_threads,

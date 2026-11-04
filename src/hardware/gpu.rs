@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Copyright (c) 2026 Piotr Błażejewicz and contributors
 
+use crate::hardware::dxgi::AdapterInfo;
 use crate::hardware::pdh::win_pdh::PdhTelemetryState;
 use crate::snapshot::types::{AcceleratorProcess, GpuThrottlingFlags, IntelArcGpuSnapshot};
 
 pub fn collect_gpu_snapshot(
+    adapters: &[AdapterInfo],
+    engine_items: &[(String, f64)],
     pdh_state: Option<&PdhTelemetryState>,
     mock: bool,
 ) -> IntelArcGpuSnapshot {
@@ -13,10 +16,12 @@ pub fn collect_gpu_snapshot(
     }
     #[cfg(windows)]
     {
-        collect_windows_gpu(pdh_state)
+        collect_windows_gpu(adapters, engine_items, pdh_state)
     }
     #[cfg(not(windows))]
     {
+        let _ = adapters;
+        let _ = engine_items;
         let _ = pdh_state;
         collect_linux_gpu()
     }
@@ -55,11 +60,12 @@ fn mock_gpu_snapshot() -> IntelArcGpuSnapshot {
 }
 
 #[cfg(windows)]
-fn collect_windows_gpu(pdh_state: Option<&PdhTelemetryState>) -> IntelArcGpuSnapshot {
-    use crate::hardware::dxgi::win_dxgi::enumerate_dxgi_adapters;
-
-    let adapters = enumerate_dxgi_adapters();
-    let gpu_adapter = adapters.into_iter().find(|a| a.is_gpu);
+fn collect_windows_gpu(
+    adapters: &[AdapterInfo],
+    engine_items: &[(String, f64)],
+    pdh_state: Option<&PdhTelemetryState>,
+) -> IntelArcGpuSnapshot {
+    let gpu_adapter = adapters.iter().find(|a| a.is_gpu);
 
     let Some(adapter) = gpu_adapter else {
         return IntelArcGpuSnapshot {
@@ -92,39 +98,38 @@ fn collect_windows_gpu(pdh_state: Option<&PdhTelemetryState>) -> IntelArcGpuSnap
     let mut shared_memory_used_mb = 0u64;
     let mut active_processes = Vec::new();
 
-    if let Some(pdh) = pdh_state {
-        let engine_items = pdh.read_array("gpu_engines");
-        for (name, val) in engine_items {
-            let name_lower = name.to_lowercase();
-            if name_lower.contains(&luid_pattern) {
-                let v = val as f32;
-                if name_lower.contains("engtype_3d") {
-                    render_3d_pct += v;
-                } else if name_lower.contains("engtype_compute") {
-                    compute_pct += v;
-                } else if name_lower.contains("engtype_copy") {
-                    copy_pct += v;
-                } else if name_lower.contains("engtype_videodecode") {
-                    video_decode_pct += v;
-                }
+    for (name, val) in engine_items {
+        let name_lower = name.to_lowercase();
+        if name_lower.contains(&luid_pattern) {
+            let v = *val as f32;
+            if name_lower.contains("engtype_3d") {
+                render_3d_pct += v;
+            } else if name_lower.contains("engtype_compute") {
+                compute_pct += v;
+            } else if name_lower.contains("engtype_copy") {
+                copy_pct += v;
+            } else if name_lower.contains("engtype_videodecode") {
+                video_decode_pct += v;
+            }
 
-                if let Some(pid) = extract_pid_from_instance(&name_lower) {
-                    if !active_processes
-                        .iter()
-                        .any(|p: &AcceleratorProcess| p.pid == pid)
-                    {
-                        active_processes.push(AcceleratorProcess {
-                            pid,
-                            name: format!("PID {}", pid),
-                            engine: "GPU Engine".to_string(),
-                            shared_memory_mb: 0,
-                            utilization_pct: v,
-                        });
-                    }
+            if let Some(pid) = extract_pid_from_instance(&name_lower) {
+                if !active_processes
+                    .iter()
+                    .any(|p: &AcceleratorProcess| p.pid == pid)
+                {
+                    active_processes.push(AcceleratorProcess {
+                        pid,
+                        name: format!("PID {}", pid),
+                        engine: "GPU Engine".to_string(),
+                        shared_memory_mb: 0,
+                        utilization_pct: v,
+                    });
                 }
             }
         }
+    }
 
+    if let Some(pdh) = pdh_state {
         let mem_items = pdh.read_array("gpu_proc_mem");
         for (name, bytes) in mem_items {
             let name_lower = name.to_lowercase();
@@ -149,7 +154,7 @@ fn collect_windows_gpu(pdh_state: Option<&PdhTelemetryState>) -> IntelArcGpuSnap
     };
 
     IntelArcGpuSnapshot {
-        name: adapter.description,
+        name: adapter.description.clone(),
         architecture: "8 Xe2-LPG cores (Battlemage)".to_string(),
         gpu_tops: 64,
         adapter_luid: Some(luid_val),
@@ -218,56 +223,74 @@ struct CtlPowerTelemetry {
 
 #[cfg(windows)]
 fn try_read_igcl() -> Option<IgclTelemetry> {
-    unsafe {
+    type CtlInitFn =
+        unsafe extern "C" fn(args: *mut CtlInitArgs, handle: *mut *mut std::ffi::c_void) -> i32;
+    type CtlCloseFn = unsafe extern "C" fn(handle: *mut std::ffi::c_void) -> i32;
+    type CtlEnumDevicesFn = unsafe extern "C" fn(
+        handle: *mut std::ffi::c_void,
+        count: *mut u32,
+        devices: *mut *mut std::ffi::c_void,
+    ) -> i32;
+    type CtlPowerTelemetryGetFn =
+        unsafe extern "C" fn(device: *mut std::ffi::c_void, args: *mut CtlPowerTelemetry) -> i32;
+
+    struct IgclLib {
+        _lib: libloading::Library,
+        ctl_init: CtlInitFn,
+        ctl_close: CtlCloseFn,
+        ctl_enum: CtlEnumDevicesFn,
+        ctl_telemetry: CtlPowerTelemetryGetFn,
+    }
+
+    static IGCL: std::sync::OnceLock<Option<IgclLib>> = std::sync::OnceLock::new();
+
+    let igcl = IGCL.get_or_init(|| unsafe {
         let lib = libloading::Library::new("ControlLib.dll").ok()?;
+        let ctl_init = *lib.get::<CtlInitFn>(b"ctlInit\0").ok()?;
+        let ctl_close = *lib.get::<CtlCloseFn>(b"ctlClose\0").ok()?;
+        let ctl_enum = *lib.get::<CtlEnumDevicesFn>(b"ctlEnumerateDevices\0").ok()?;
+        let ctl_telemetry = *lib
+            .get::<CtlPowerTelemetryGetFn>(b"ctlPowerTelemetryGet\0")
+            .ok()?;
+        Some(IgclLib {
+            _lib: lib,
+            ctl_init,
+            ctl_close,
+            ctl_enum,
+            ctl_telemetry,
+        })
+    });
 
-        type CtlInitFn =
-            unsafe extern "C" fn(args: *mut CtlInitArgs, handle: *mut *mut std::ffi::c_void) -> i32;
-        type CtlCloseFn = unsafe extern "C" fn(handle: *mut std::ffi::c_void) -> i32;
-        type CtlEnumDevicesFn = unsafe extern "C" fn(
-            handle: *mut std::ffi::c_void,
-            count: *mut u32,
-            devices: *mut *mut std::ffi::c_void,
-        ) -> i32;
-        type CtlPowerTelemetryGetFn = unsafe extern "C" fn(
-            device: *mut std::ffi::c_void,
-            args: *mut CtlPowerTelemetry,
-        ) -> i32;
+    let igcl = igcl.as_ref()?;
 
-        let ctl_init: libloading::Symbol<CtlInitFn> = lib.get(b"ctlInit\0").ok()?;
-        let ctl_close: libloading::Symbol<CtlCloseFn> = lib.get(b"ctlClose\0").ok()?;
-        let ctl_enum: libloading::Symbol<CtlEnumDevicesFn> =
-            lib.get(b"ctlEnumerateDevices\0").ok()?;
-        let ctl_telemetry: libloading::Symbol<CtlPowerTelemetryGetFn> =
-            lib.get(b"ctlPowerTelemetryGet\0").ok()?;
-
+    unsafe {
         let mut args: CtlInitArgs = std::mem::zeroed();
         args.size = std::mem::size_of::<CtlInitArgs>() as u32;
         args.supported_version = 1;
 
         let mut api_handle: *mut std::ffi::c_void = std::ptr::null_mut();
-        if ctl_init(&mut args, &mut api_handle) != 0 || api_handle.is_null() {
+        if (igcl.ctl_init)(&mut args, &mut api_handle) != 0 || api_handle.is_null() {
             return None;
         }
 
         let mut count = 0u32;
-        if ctl_enum(api_handle, &mut count, std::ptr::null_mut()) != 0 || count == 0 {
-            ctl_close(api_handle);
+        if (igcl.ctl_enum)(api_handle, &mut count, std::ptr::null_mut()) != 0 || count == 0 {
+            (igcl.ctl_close)(api_handle);
             return None;
         }
 
         let mut device_handles: Vec<*mut std::ffi::c_void> =
             vec![std::ptr::null_mut(); count as usize];
-        if ctl_enum(api_handle, &mut count, device_handles.as_mut_ptr()) != 0 {
-            ctl_close(api_handle);
+        if (igcl.ctl_enum)(api_handle, &mut count, device_handles.as_mut_ptr()) != 0 {
+            (igcl.ctl_close)(api_handle);
             return None;
         }
 
         let mut telem: CtlPowerTelemetry = std::mem::zeroed();
         telem.size = std::mem::size_of::<CtlPowerTelemetry>() as u32;
 
-        let status = ctl_telemetry(device_handles[0], &mut telem);
-        ctl_close(api_handle);
+        let status = (igcl.ctl_telemetry)(device_handles[0], &mut telem);
+        (igcl.ctl_close)(api_handle);
 
         if status == 0 {
             let clock_mhz = telem.gpu_current_clock_frequency as u32;

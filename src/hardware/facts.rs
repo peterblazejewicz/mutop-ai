@@ -60,14 +60,32 @@ pub fn get_host_info(mock: bool) -> HostInfo {
 
 #[cfg(windows)]
 fn detect_windows_build() -> String {
-    use windows_sys::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOEXW};
-    let mut os_info: OSVERSIONINFOEXW = unsafe { std::mem::zeroed() };
-    os_info.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOEXW>() as u32;
-    let res = unsafe { GetVersionExW(&mut os_info as *mut _ as *mut _) };
-    if res != 0 {
+    #[repr(C)]
+    struct OsVersionInfoExW {
+        os_version_info_size: u32,
+        major_version: u32,
+        minor_version: u32,
+        build_number: u32,
+        platform_id: u32,
+        csd_version: [u16; 128],
+        service_pack_major: u16,
+        service_pack_minor: u16,
+        suite_mask: u16,
+        product_type: u8,
+        reserved: u8,
+    }
+
+    extern "system" {
+        fn RtlGetVersion(version_info: *mut OsVersionInfoExW) -> i32;
+    }
+
+    let mut info: OsVersionInfoExW = unsafe { std::mem::zeroed() };
+    info.os_version_info_size = std::mem::size_of::<OsVersionInfoExW>() as u32;
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status == 0 {
         format!(
             "Windows 11 Build {}.{}.{}",
-            os_info.dwMajorVersion, os_info.dwMinorVersion, os_info.dwBuildNumber
+            info.major_version, info.minor_version, info.build_number
         )
     } else {
         "Windows 11".to_string()

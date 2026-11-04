@@ -3,8 +3,20 @@
 
 use crate::hardware::pdh::win_pdh::PdhTelemetryState;
 use crate::snapshot::types::{NvmeSmartHealth, NvmeStorageSnapshot};
+#[cfg(windows)]
+use std::time::Duration;
+use std::time::Instant;
+
+#[derive(Default)]
+pub struct StorageCollectorState {
+    pub last_slow_poll: Option<Instant>,
+    pub cached_capacity_free: (f64, f64, f32),
+    pub cached_smart: Option<NvmeSmartHealth>,
+    pub cached_pcie: (u8, u8, u8, u8, bool),
+}
 
 pub fn collect_storage_snapshot(
+    state: &mut StorageCollectorState,
     pdh_state: Option<&PdhTelemetryState>,
     mock: bool,
 ) -> NvmeStorageSnapshot {
@@ -13,10 +25,11 @@ pub fn collect_storage_snapshot(
     }
     #[cfg(windows)]
     {
-        collect_windows_storage(pdh_state)
+        collect_windows_storage(state, pdh_state)
     }
     #[cfg(not(windows))]
     {
+        let _ = state;
         let _ = pdh_state;
         collect_linux_storage()
     }
@@ -60,31 +73,47 @@ fn mock_storage_snapshot() -> NvmeStorageSnapshot {
 }
 
 #[cfg(windows)]
-fn collect_windows_storage(pdh_state: Option<&PdhTelemetryState>) -> NvmeStorageSnapshot {
+fn collect_windows_storage(
+    state: &mut StorageCollectorState,
+    pdh_state: Option<&PdhTelemetryState>,
+) -> NvmeStorageSnapshot {
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-    let mut free_bytes_avail: u64 = 0;
-    let mut total_bytes: u64 = 0;
-    let mut total_free_bytes: u64 = 0;
+    let should_poll_slow = state
+        .last_slow_poll
+        .map(|t| t.elapsed() >= Duration::from_secs(2))
+        .unwrap_or(true);
 
-    let success = unsafe {
-        let path: Vec<u16> = "C:\\\0".encode_utf16().collect();
-        GetDiskFreeSpaceExW(
-            path.as_ptr(),
-            &mut free_bytes_avail,
-            &mut total_bytes,
-            &mut total_free_bytes,
-        )
-    };
+    if should_poll_slow {
+        let mut free_bytes_avail: u64 = 0;
+        let mut total_bytes: u64 = 0;
+        let mut total_free_bytes: u64 = 0;
 
-    let (capacity_gb, free_gb, used_pct) = if success != 0 && total_bytes > 0 {
-        let cap = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        let free = total_free_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        let used = (((cap - free) / cap) * 100.0) as f32;
-        (cap, free, used)
-    } else {
-        (0.0, 0.0, 0.0)
-    };
+        let success = unsafe {
+            let path: Vec<u16> = "C:\\\0".encode_utf16().collect();
+            GetDiskFreeSpaceExW(
+                path.as_ptr(),
+                &mut free_bytes_avail,
+                &mut total_bytes,
+                &mut total_free_bytes,
+            )
+        };
+
+        if success != 0 && total_bytes > 0 {
+            let cap = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            let free = total_free_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            let used = (((cap - free) / cap) * 100.0) as f32;
+            state.cached_capacity_free = (cap, free, used);
+        }
+
+        state.cached_smart = try_query_nvme_smart_health();
+        state.cached_pcie = query_pcie_link_status();
+        state.last_slow_poll = Some(Instant::now());
+    }
+
+    let (capacity_gb, free_gb, used_pct) = state.cached_capacity_free;
+    let smart_health = state.cached_smart.clone();
+    let (current_gen, current_lanes, max_gen, max_lanes, is_link_degraded) = state.cached_pcie;
 
     let mut read_mb_s = 0.0;
     let mut write_mb_s = 0.0;
@@ -121,10 +150,6 @@ fn collect_windows_storage(pdh_state: Option<&PdhTelemetryState>) -> NvmeStorage
             avg_write_latency_ms = v * 1000.0;
         }
     }
-
-    let smart_health = try_query_nvme_smart_health();
-    let (current_gen, current_lanes, max_gen, max_lanes, is_link_degraded) =
-        query_pcie_link_status();
 
     NvmeStorageSnapshot {
         capacity_gb,
