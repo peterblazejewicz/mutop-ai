@@ -341,7 +341,7 @@ Scenario 3D executes two complete, real-world Device Commander end-to-end voice 
   - Moonshine pre-optimized ONNX with warmed memory arena on LP-E cores.
   - FunctionGemma pre-compiled `.blob` loaded from cache into NPU.
   - Pre-synthesized reflex audio buffer emitted directly from RAM (<10 ms).
-* **Target Latency:** Cold > 24.0s $\to$ **Warm < 0.25s end-to-end**!
+* **Target Latency:** Cold > 24.0s $\to$ Fast-path (S1/S2/EmbeddingGemma) Warm < 0.25s; Full S3 FunctionGemma-270M NPU tool-calling turn Warm < 0.75s (within the 1.2s VA-7 budget).
 
 #### Workflow 2: Generative Assistance Turn (Local SLM Reasoning)
 ```
@@ -405,7 +405,7 @@ This matrix establishes the non-negotiable boundaries of the LattePanda Mu Ultra
 
 To capture precise statistical interval summaries for each scenario without modifying AI engine internals, `mutop-ai` supports external phase marker injection via `--mark-file <path>`.
 
-### 5.1 Marker Protocol Format
+### 6.1 Marker Protocol Format
 
 In `edgetop-core` and `mutop-ai`, `consume_mark_file` reads plain-text lines from `--mark-file` and immediately truncates the file. Consecutive marker tokens form labeled intervals in the summary report:
 $$\text{Interval}_i = \text{marker}_i \to \text{marker}_{i+1}$$
@@ -443,7 +443,7 @@ To guarantee that `mutop-ai -s 200` samples each transition without race conditi
 1D_done
 ```
 
-### 5.2 Summary Generation Output
+### 6.2 Summary Generation Output
 
 When `--summary` is passed, `mutop-ai` computes and prints statistical distributions (Min, Median, P90, Max) for each interval marker transition:
 
