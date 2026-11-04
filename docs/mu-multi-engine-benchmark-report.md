@@ -27,6 +27,12 @@ This report documents the empirical benchmark results of the complete multi-engi
 3. **Wave 3 — Simultaneous Multi-Engine Composite Workloads (`Scenarios 2A & 2B`)**:
    - `Scenario 2A (Interactive Voice Turn Cycle)`: 10 consecutive composite turns executing concurrent GPU token generation (25.4 tok/s), NPU intent + embedding lookup (828.4 ms), and CPU audio processing (143.4 ms STT + 415.8 ms TTS), completing in an average of **0.84 seconds per full turn** at **5.66 W median board power**.
    - `Scenario 2B (60s Sustained Tri-Accelerator Stress & UMA Contention)`: Continuous simultaneous saturation of Arc 140V GPU, AI Boost NPU 4, and 8 CPU cores sustained at **21.23 W median power** (26.46 W peak), maintaining safe thermals (**57.0 °C median**, 81.0 °C peak) and 24 °C margin below TjMax with zero throttling.
+4. **Wave 4 — Cold vs. Warm Startup & Subsystem Optimization Verification (`Scenarios 3A – 3E`)**:
+   - `Scenario 3A (NPU Startup & Caching)`: Monolithic `.blob` caching slashed `Whisper Large-v3-Turbo` cold load from **385.4s (6.4 min) down to 8.88s (43.4x speedup)**; weightless `.blob` caching achieved an **88.2x disk footprint reduction** (584 MB -> 6.62 MB) on `EmbeddingGemma-300M` with identical steady-state latency (13.80 ms); explicit AOT binary import bypassed IR frontend parsing in **312.8 ms**; `NPU_TURBO=True` improved embedding latency by **29.6%** (11.85 ms -> 8.34 ms) at 3.50 W.
+   - `Scenario 3B (GPU Caching & SLM Prefix Caching)`: Arc 140V Xe2 Level Zero kernel cache reduced Whisper Large startup from **15.15s to 2.26s (6.7x speedup)**; Slot 0 system prompt KV caching yielded a **50.6 ms prefill latency savings**.
+   - `Scenario 3C (STT/TTS Optimization & Audio Caching)`: ONNX graph optimization accelerated Moonshine session init by **2.3x**; RAM PCM reflex cache achieved sub-microsecond (**0.3 µs**) phrase playback; sentence-chunked streaming TTS reduced time-to-first-audio by **853.7 ms (1.38x speedup)**.
+   - `Scenario 3D (End-to-End Voice Workflows)`: Local Edge Control Turn executed in **0.106s (Fast-Path)** and **0.908s (Full S3 Intent)**, fully compliant with the 1.2s `VA-7` budget; Generative SLM Turn achieved **1.102s TTFA** (3.02x faster than cold).
+   - `Scenario 3E (Limitation Marker Boundaries)`: Formally validated 7 hardware/driver architectural ceilings, identifying their telemetry signatures and runtime mitigations.
 
 ```mermaid
 flowchart TD
@@ -290,11 +296,155 @@ Continuous 60-second saturation across all compute engines simultaneously:
 
 ---
 
-## 6. Architectural Recommendations for Device Commander
+## 6. Wave 4 — Cold vs. Warm Startup & Subsystem Optimization Verification (`Scenarios 3A – 3E`)
 
-Based on empirical data gathered across Scenarios 1A through 2B, the following binding recommendations govern Device Commander deployment on the LattePanda Mu Ultra and comparable Intel Lunar Lake host laptops:
+Wave 4 evaluated empirical optimization mechanisms across NPU, GPU, and CPU execution pipelines on the LattePanda Mu Ultra, quantifying the transition from cold disk launch to steady-state interactive operation.
 
-### 6.1 Heterogeneous Engine Partitioning
+### 6.1 OpenVINO NPU Cold vs. Warm Startup & AOT Distribution (`Scenario 3A`)
+
+#### A. Monolithic Blob Caching (`CACHE_MODE = OPTIMIZE_SPEED`)
+Persistent `.blob` caching serializes the fully compiled VCL neural tile binary into `C:\Users\peter\models\.ov_cache_speed`:
+
+| Model Architecture | Accelerator | Cold JIT Compile (`CACHE_DIR=""`) | Warm Load (`OPTIMIZE_SPEED`) | Load Speedup | Turn 1 Latency | Turn 2–10 Steady-State | Cache Size |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **`EmbeddingGemma-300M`** | NPU | **26.55 s** | **748.83 ms** | **35.5×** | 94.18 ms | **14.10 ms** | 584.04 MB |
+| **`FunctionGemma-270M-INT8`** | NPU | **20.84 s** | **2,086.74 ms** | **10.0×** | 891.23 ms | **368.41 ms** | 593.93 MB |
+| **`Whisper Base`** | NPU | **33.03 s** | **5,516.05 ms** | **6.0×** | 237.34 ms | **166.37 ms** | 303.50 MB |
+| **`Whisper Small`** | NPU | **91.51 s** | **11,423.85 ms** | **8.0×** | 374.45 ms | **217.97 ms** | 598.60 MB |
+| **`Whisper Large-v3-Turbo`** | NPU | **385.40 s** (6.4 min) | **8,880.47 ms** (8.88 s) | **43.4×** | 1,256.61 ms | **417.05 ms** | 885.20 MB |
+
+*Analysis:* On deep models (`Whisper Large-v3-Turbo`), disk caching eliminates over **6.4 minutes of cold offline VCL compilation**, enabling service startup in **8.88 seconds**.
+
+#### B. Weightless Blobs (`CACHE_MODE = OPTIMIZE_SIZE`)
+Setting `CACHE_MODE = OPTIMIZE_SIZE` decouples graph topology descriptors from model weights:
+
+| Model Architecture | Monolithic `.blob` Size | Weightless `.blob` Size | Storage Reduction | Warm Load Time | Turn 1 Latency | Steady-State Latency |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **`EmbeddingGemma-300M`** | 584.04 MB | **6.62 MB** | **88.2× reduction** | 2,198.83 ms | 20.82 ms | **13.80 ms** |
+| **`FunctionGemma-270M-INT8`** | 612.41 MB | **177.80 MB** | **3.4× reduction** | 2,086.74 ms | 670.14 ms | **366.12 ms** |
+
+*Analysis:* For static-shape models (`EmbeddingGemma`), weightless `.blob` caching achieves an **88.2× footprint reduction** on disk with **identical steady-state inference latency (13.80 ms vs. 14.10 ms)**. The trade-off is an additional ~1.4s of external weights mapping during process initialization.
+
+#### C. Explicit Ahead-Of-Time (AOT) Import (`export_model` $\rightarrow$ `import_model`)
+For static-shape `EmbeddingGemma-300M` (`[1, 128]`):
+- **AOT Export:** 584.04 MB binary written in 1,549.53 ms.
+- **`core.import_model()` Startup:** **312.79 ms** load time.
+- **Frontend Bypass Savings:** Bypassing OpenVINO XML/BIN parsing and frontend graph validation saves **1,274.01 ms** (4.98× speedup vs. `compile_model()`).
+- **Inference Latency:** Turn 1 = 28.74 ms; Steady-State = **12.97 ms**.
+
+#### D. Turn 1 vs. Turn 2+ In-Memory Warmup Dynamics
+The triple-tier warmup hierarchy demonstrates that Turn 1 incurs a hardware buffer mapping penalty before reaching steady-state:
+- `EmbeddingGemma-300M`: Turn 1 (**94.18 ms**) $\rightarrow$ Turn 2+ (**14.10 ms**), a **6.7× acceleration**.
+- `FunctionGemma-270M-INT8`: Turn 1 (**891.23 ms**) $\rightarrow$ Turn 2+ (**368.41 ms**), a **2.4× acceleration**.
+- *Operational Guideline:* Systems must execute one dummy inference turn during service boot to pre-allocate tile DMA buffers before accepting voice commands.
+
+#### E. NPU Clock & Energy Tuning (`NPU_TURBO` & `WORKLOAD_TYPE`)
+
+| Configuration | FunctionGemma Steady | EmbeddingGemma Steady | Board Power (Median) | Power (P90) | Process CPU | CPU Package Temp | Fan RPM |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **`DEFAULT`** (`TURBO=False, WORKLOAD=DEFAULT`) | 318.92 ms | 11.85 ms | **3.55 W** | 9.92 W | 12.2% | 44.0 °C | 2,935 RPM |
+| **`TURBO`** (`TURBO=True, WORKLOAD=DEFAULT`) | 318.64 ms | **8.34 ms** (**-29.6%**) | **3.50 W** | 5.25 W | 12.2% | 44.0 °C | 2,813 RPM |
+| **`EFFICIENT`** (`TURBO=False, WORKLOAD=EFFICIENT`) | 322.43 ms | 14.86 ms (+25.4%) | **6.97 W** | 14.32 W | 8.8% | 47.0 °C | 2,974 RPM |
+
+*Telemetry Discovery:* `NPU_TURBO = True` provides a **29.6% speedup** on embedding throughput (8.34 ms vs. 11.85 ms) with unchanged median board power (**3.50 W**). Conversely, `WORKLOAD_TYPE = EFFICIENT` throttles NPU clocks, which paradoxically increases package energy consumption (**6.97 W median**) due to prolonged CPU thread polling ("race-to-sleep" violation).
+
+---
+
+### 6.2 OpenVINO GPU Kernel Cache on Intel Arc 140V (`Scenario 3B Part 1`)
+
+Passing `core.set_property("GPU", {"CACHE_DIR": ...})` instructs Level Zero and OpenCL to persist Xe2 ISA machine code binaries (`*.cl_cache` and `.blob`):
+
+| Whisper Model Tier | Cold JIT Compile (`CACHE_DIR=""`) | Warm Cached Startup | Load Speedup | Turn 1 Latency | Turn 2 Latency | Total Kernel Cache Size |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **`base`** | 2.61 s | **649.01 ms** | **4.0×** | 1,007.42 ms | **153.92 ms** | 149.78 MB |
+| **`small`** | 10.31 s | **2,254.26 ms** | **4.6×** | 927.48 ms | **190.18 ms** | 623.84 MB |
+| **`large-v3-turbo`** | 15.15 s | **2,260.36 ms** | **6.7×** | 1,014.75 ms | **327.09 ms** | 2,179.48 MB (2.18 GB) |
+
+*Analysis:* Disk kernel caching eliminates **15.15 seconds of cold JIT compilation** on `large-v3-turbo`, reducing startup to **2.26 seconds**.
+
+---
+
+### 6.3 GPU SLM Startup, System-Prompt Prefix Caching & UMA Relief (`Scenario 3B Part 2`)
+
+Evaluated on `llama-server.exe` (Vulkan) hosting `Gemma 4 E2B` (3.10 GB):
+
+#### A. Process Memory Load Modes
+- `--load-mode mmap`: Server ready in **1.743 s**; first request TTFT = **82.6 ms**; total cold time to first token = **1.825 s**.
+- `--load-mode none` (`--no-mmap`): Server ready in **1.730 s**; first request TTFT = **78.0 ms**; total cold time = **1.808 s**.
+- `--load-mode mmap+mlock`: Server ready in **2.356 s**; first request TTFT = **80.5 ms**; total cold time = **2.437 s**.
+
+#### B. System Prompt KV Prefix Caching (Slot 0)
+- **Turn 1 (Cold Prefill, 240 tokens)**: 302.0 ms prefill (794.6 tok/s), TTFT = 302.0 ms.
+- **Turn 2 (Warm Prefix, 238 cached tokens)**: 251.5 ms prefill (946.5 tok/s), TTFT = 251.5 ms.
+- **Outcome:** **50.6 ms prefill savings** (1.2× speedup) by persisting the static system prompt in Slot 0.
+
+#### C. UMA Memory Contention & FlashAttention
+- `F16_KV_Default`: GPU PP512 = 797.1 tok/s; TG128 = 30.2 tok/s; concurrent NPU loop average = 681.7 ms.
+- `Q8_0_KV_FlashAttn`: GPU PP512 = 514.2 tok/s; TG128 = 26.0 tok/s; concurrent NPU loop average = 699.8 ms.
+- *Analysis:* Quantizing KV cache to `q8_0` reduces working set memory pressure on the 128-bit UMA bus, preventing cross-engine memory bus thrashing.
+
+---
+
+### 6.4 STT/TTS ONNX Optimization, Arena Warmup & Tiered Audio Cache (`Scenario 3C`)
+
+#### A. ONNX Offline Graph Optimization (`_opt.onnx`) & Memory Arena
+- `Moonshine Tiny`: Cold session init **205.0 ms** $\rightarrow$ Warm pre-optimized init **89.4 ms** (**2.29× speedup**).
+- `Moonshine Base`: Cold session init **321.4 ms** $\rightarrow$ Warm pre-optimized init **137.7 ms** (**2.33× speedup**); memory arena warmup reduced inference from 89.3 ms to 79.2 ms (1.13×).
+- `Piper Alan`: Memory arena execution warmup reduced step latency from 32.5 ms to **28.2 ms** (1.15×).
+
+#### B. Piper Tiered Voice Synthesis
+- **Mode 1 (Cold Process Spawn `piper.exe`)**: **4,899.1 ms** (unacceptable for interactive voice).
+- **Mode 2 (Warm In-Process `InferenceSession`)**: **335.1 ms** (14.6× speedup vs. cold spawn).
+- **Mode 3 (Pre-Synthesized RAM PCM Reflex Cache)**: **0.0003 ms (0.3 µs)** (**>1,000,000× speedup**).
+
+#### C. Streaming Overlapped Sentence-Chunked TTS
+- **Sequential Pipeline**: SLM Generation (1,524.4 ms) + TTS Synthesis (1,591.5 ms) = **3,115.9 ms Time-To-First-Audio (TTFA)**.
+- **Streamed Overlapped Pipeline**: First clause synthesis dispatched concurrently = **2,262.2 ms TTFA**.
+- **Outcome:** **853.7 ms TTFA reduction (1.38× speedup)**.
+
+---
+
+### 6.5 End-to-End Target Voice Workflows: Cold vs. Warm Comparison (`Scenario 3D`)
+
+```
++---------------------------------------------------------------------------------------------------+
+|                            WORKFLOW 1: LOCAL EDGE CONTROL / REFLEX TURN                           |
++---------------------------------------------------------------------------------------------------+
+|  Cold Unoptimized:                 6.803 s  (Cold spawns, unoptimized models)                     |
+|  Warm S3 Intent Turn:              0.908 s  (Moonshine 83.7ms + FG NPU 698.8ms + Piper 125.7ms)   |
+|  Warm Fast-Path Reflex Turn:       0.106 s  (Moonshine 89.6ms + Embed 16.5ms + RAM Cache 0.01ms)  |
+|  Budget Target Status:             PASS (Warm S3 0.908s < 1.2s VA-7; Fast-Path 0.106s < 0.25s)    |
++---------------------------------------------------------------------------------------------------+
+|                            WORKFLOW 2: GENERATIVE ASSISTANCE TURN (LOCAL SLM)                     |
++---------------------------------------------------------------------------------------------------+
+|  Cold Unoptimized Total:           9.172 s  (TTFA: 3.323 s)                                       |
+|  Warm Streamed Overlapped Total:   1.103 s  (TTFA: 1.102 s, 3.02x speedup vs. cold)               |
++---------------------------------------------------------------------------------------------------+
+```
+
+---
+
+### 6.6 Hardware & Driver `[LIMITATION MARKER]` Verification Matrix (`Scenario 3E`)
+
+The following matrix documents all 7 architectural boundaries verified on the LattePanda Mu Ultra:
+
+| Limitation Marker | Root Cause | `mutop-ai` Telemetry Signature | Verified Mitigation Strategy |
+|:---|:---|:---|:---|
+| **`[LIMITATION MARKER: UMA_MEMORY_BANDWIDTH_136GBPS]`** | 128-bit LPDDR5X-8533 shared bus saturates at 136.5 GB/s theoretical bandwidth. | GPU decode drops from 38.4 to 26.0 tok/s during concurrent memory copies. | Quantize KV cache to `q8_0`, enable FlashAttention, stagger background batch embeddings. |
+| **`[LIMITATION MARKER: PHYSICAL_MOP_CAPACITY_16GB]`** | 16 GB LPDDR5X integrated directly on compute package; non-expandable. | OS physical RAM committed exceeds 14.5 GB; standby list compressed. | Cap simultaneous residency: run E2B (3.1 GB) instead of E4B (5.0 GB) when Whisper Medium is loaded. |
+| **`[LIMITATION MARKER: DXCORE_MCDM_SHARED_APERTURE_9156MB]`** | Windows WDDM limits shared compute device allocation to ~57% of physical RAM. | `E_OUTOFMEMORY` on GPU/NPU buffer allocation above 9,156 MB. | Orchestrate engine lifecycle: enforce strict working set caps per accelerator. |
+| **`[LIMITATION MARKER: CARRIER_PL1_POWER_28W]`** | Carrier board BIOS enforces 28W sustained power limit (PL1). | RAPL package power plateaus at 26.46 W; GPU clock throttles from 1.95 to 1.4 GHz. | Offload audio pipelines to Skymont LP-E cores (low-power island) to keep total package within 15–22W. |
+| **`[LIMITATION MARKER: NPU_STATIC_SHAPE_COMPILATION]`** | Intel AI Boost NPU 4 neural tiles require static tensor shapes. | JIT re-compilation triggers 20–30s latency spike on shape change. | Pre-compile models with discrete shape buckets (`[1, 64]`, `[1, 128]`, `[4, 512]`). |
+| **`[LIMITATION MARKER: NPU Dynamic Shape Rejection 0x78000004]`** | VCL compiler rejects unbounded negative dimension bounds (`[-1, -1]`). | Compiler error: `vclAllocatedExecutableCreate4 result: 0x78000004`. | Explicitly reshape all model inputs statically (`input_ids`, `attention_mask`, `position_ids`). |
+| **`[LIMITATION MARKER: VCL ABI Driver-Coupling Across Windows Update]`** | Compiled `.blob` headers embed explicit OpenVINO build hashes (`ie_version`) and VCL compiler ABI versions. | Cached `.blob` rejected after driver upgrade, triggering unexpected cold compile. | Implement an automated post-update background precompilation service on driver revision change. |
+
+---
+
+## 7. Architectural Recommendations for Device Commander
+
+Based on empirical data gathered across Scenarios 1A through 3E, the following binding recommendations govern Device Commander deployment on the LattePanda Mu Ultra and comparable Intel Lunar Lake host laptops:
+
+### 7.1 Heterogeneous Engine Partitioning
 1. **NPU for Voice Intent & STT**:
    - Intel AI Boost NPU 4 decisively outperforms GPU and CPU on speech-to-text latency (**621 ms for Whisper Large-v3-Turbo**, **175 ms for Whisper Base**) while drawing under **3.5 W**.
    - Running `FunctionGemma-270M-INT8` and `EmbeddingGemma-300M` on NPU isolates the critical voice interaction path from background graphics or general compute loads.
@@ -303,14 +453,14 @@ Based on empirical data gathered across Scenarios 1A through 2B, the following b
 3. **Skymont LP-E Cores for Audio Streaming & TTS**:
    - `Moonshine Tiny` (87 ms) and `Piper TTS` (2.9s for 41s audio) should be pinned to Skymont LP-E cores (`0xF0`), keeping Lion Cove P-cores completely free for user host applications.
 
-### 6.2 oneTBB Core Affinity & Scheduling Rules
+### 7.2 oneTBB Core Affinity & Scheduling Rules
 - **Explicit OpenVINO Core Scheduling**: When deploying OpenVINO pipelines intended for energy-efficient background execution, developers must not rely on process-level affinity masks (`SetProcessAffinityMask`). Instead, pass:
   ```python
   {"SCHEDULING_CORE_TYPE": "ECORE_ONLY", "ENABLE_CPU_PINNING": True}
   ```
 - This forces oneTBB to respect the Skymont LP-E cluster, preventing high-power P-core saturation and saving 25% package power.
 
-### 6.3 Mandatory Precompilation Caching (`.ov_cache`)
+### 7.3 Mandatory Precompilation Caching (`.ov_cache`)
 - NPU graph compilation on Intel Lunar Lake scales steeply with model depth (from 29.5s on `whisper-base` to 385.4s on `whisper-large-v3-turbo`).
 - Offline precompilation during software installation or first boot is mandatory:
   ```python
@@ -318,13 +468,13 @@ Based on empirical data gathered across Scenarios 1A through 2B, the following b
   ```
   Subsequent model warm loads from `.ov_cache` complete in **~1.2 seconds**.
 
-### 6.4 Power & Latency Budget Compliance (`VA-7`)
-- Scenario 2A demonstrated end-to-end voice turn latency averaging **0.84 seconds** under full concurrency.
-- This solidly satisfies the Device Commander **1.2-second spoken confirmation latency milestone** (`VA-7`) with a 360 ms buffer, while consuming only **5.66 W median board power**.
+### 7.4 Power & Latency Budget Compliance (`VA-7`)
+- Scenario 2A demonstrated end-to-end voice turn latency averaging **0.84 seconds** under full concurrency, and Scenario 3D confirmed **0.106s Fast-Path** and **0.908s Full S3 Turn**.
+- This solidly satisfies the Device Commander **1.2-second spoken confirmation latency milestone** (`VA-7`) with a 292 ms margin, while consuming only **5.66 W median board power**.
 
 ---
 
-## 7. Provenance & Artifact Index
+## 8. Provenance & Artifact Index
 
 All benchmark harnesses, execution scripts, raw logs, and structured JSON results are committed to the repository:
 
@@ -339,4 +489,7 @@ All benchmark harnesses, execution scripts, raw logs, and structured JSON result
 | **Scenario 1F TTS** | [`docs/benchmark-results/wave2/scenario_1f_summary.json`](file:///D:/develop/mutop-ai/docs/benchmark-results/wave2/scenario_1f_summary.json) | Piper Neural TTS benchmark dataset |
 | **Scenario 2A Turn** | [`docs/benchmark-results/wave3/scenario_2a_summary.json`](file:///D:/develop/mutop-ai/docs/benchmark-results/wave3/scenario_2a_summary.json) | 10-turn interactive composite voice turn dataset |
 | **Scenario 2B Stress** | [`docs/benchmark-results/wave3/scenario_2b_summary.json`](file:///D:/develop/mutop-ai/docs/benchmark-results/wave3/scenario_2b_summary.json) | 60-second sustained tri-accelerator stress dataset |
+| **Wave 4 Runner (3A/3B1)** | [`scripts/run_scenario_3a.py`](file:///D:/develop/mutop-ai/scripts/run_scenario_3a.py) | OpenVINO NPU & GPU caching/tuning orchestrator |
+| **Wave 4 Dataset (3A/3B1)** | [`docs/benchmark-results/wave4/scenario_3a_3b_openvino.json`](file:///D:/develop/mutop-ai/docs/benchmark-results/wave4/scenario_3a_3b_openvino.json) | OpenVINO NPU & GPU caching and tuning dataset |
+| **Wave 4 Dataset (3B-D)** | [`docs/benchmark-results/wave4/scenario_3b_3c_3d_summary.json`](file:///D:/develop/mutop-ai/docs/benchmark-results/wave4/scenario_3b_3c_3d_summary.json) | GPU SLM prefix caching, audio caching, and workflow dataset |
 | **Stream Seam Patch** | [`src/stream.rs`](file:///D:/develop/edgetop-core/src/stream.rs) | `STREAM_END` clean summary exit in `edgetop-core` (`ff92843`) |
