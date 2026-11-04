@@ -13,6 +13,7 @@ pub struct StorageCollectorState {
     pub cached_capacity_free: (f64, f64, f32),
     pub cached_smart: Option<NvmeSmartHealth>,
     pub cached_pcie: (u8, u8, u8, u8, bool),
+    pub pcie_attempts: u8,
 }
 
 pub fn collect_storage_snapshot(
@@ -107,7 +108,15 @@ fn collect_windows_storage(
         }
 
         state.cached_smart = try_query_nvme_smart_health();
-        state.cached_pcie = query_pcie_link_status();
+        if state.pcie_attempts < 3 {
+            let pcie = query_pcie_link_status();
+            if pcie.0 > 0 || pcie.1 > 0 {
+                state.cached_pcie = pcie;
+                state.pcie_attempts = 3;
+            } else {
+                state.pcie_attempts += 1;
+            }
+        }
         state.last_slow_poll = Some(Instant::now());
     }
 
@@ -237,18 +246,68 @@ fn try_query_nvme_smart_health() -> Option<NvmeSmartHealth> {
         )
     };
 
+    // PropertyId = 52: StorageDeviceTemperatureProperty (standard stornvme.sys)
+    let temp_query = [52u32, 0u32, 0u32];
+    let mut temp_out = [0u8; 128];
+    let mut temp_bytes_ret = 0u32;
+    let temp_res = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            temp_query.as_ptr() as *const std::ffi::c_void,
+            std::mem::size_of_val(&temp_query) as u32,
+            temp_out.as_mut_ptr() as *mut std::ffi::c_void,
+            temp_out.len() as u32,
+            &mut temp_bytes_ret,
+            std::ptr::null_mut(),
+        )
+    };
+
     unsafe { CloseHandle(handle) };
+
+    let mut p52_composite: Option<f32> = None;
+    let mut p52_controller: Option<f32> = None;
+    let mut p52_nand: Option<f32> = None;
+
+    if temp_res != 0 && temp_bytes_ret >= 24 {
+        let count = u16::from_le_bytes([temp_out[12], temp_out[13]]) as usize;
+        for i in 0..count {
+            let offset = 24 + i * 16;
+            if offset + 4 <= temp_bytes_ret as usize {
+                let idx = u16::from_le_bytes([temp_out[offset], temp_out[offset + 1]]);
+                let temp = i16::from_le_bytes([temp_out[offset + 2], temp_out[offset + 3]]);
+                if temp > 0 && temp < 150 {
+                    let temp_f = temp as f32;
+                    match idx {
+                        0 => p52_composite = Some(temp_f),
+                        1 => p52_nand = Some(temp_f),
+                        2 => p52_controller = Some(temp_f),
+                        _ => {
+                            if p52_composite.is_none() {
+                                p52_composite = Some(temp_f);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     if res != 0 && bytes_returned >= 512 {
         let offset = query.protocol_data_offset as usize;
         if offset + 512 <= out_buf.len() {
             let data = &out_buf[offset..];
             let comp_temp_raw = u16::from_le_bytes([data[1], data[2]]);
-            let composite_temp_c = if comp_temp_raw > 273 {
+            let mut composite_temp_c = if comp_temp_raw > 273 {
                 (comp_temp_raw - 273) as f32
             } else {
                 0.0
             };
+            if composite_temp_c == 0.0 {
+                if let Some(t) = p52_composite {
+                    composite_temp_c = t;
+                }
+            }
             let available_spare_pct = data[3];
             let percentage_used_wear = data[5];
             let unsafe_shutdowns = u64::from_le_bytes([
@@ -262,8 +321,8 @@ fn try_query_nvme_smart_health() -> Option<NvmeSmartHealth> {
 
             return Some(NvmeSmartHealth {
                 composite_temp_c,
-                controller_temp_c: None,
-                nand_temp_c: None,
+                controller_temp_c: p52_controller,
+                nand_temp_c: p52_nand,
                 available_spare_pct,
                 percentage_used_wear,
                 data_read_gb: 0,
@@ -275,12 +334,272 @@ fn try_query_nvme_smart_health() -> Option<NvmeSmartHealth> {
         }
     }
 
+    if p52_composite.is_some() || p52_controller.is_some() {
+        return Some(NvmeSmartHealth {
+            composite_temp_c: p52_composite.unwrap_or(0.0),
+            controller_temp_c: p52_controller,
+            nand_temp_c: p52_nand,
+            available_spare_pct: 100,
+            percentage_used_wear: 0,
+            data_read_gb: 0,
+            data_written_gb: 0,
+            unsafe_shutdowns: 0,
+            warning_throttle_minutes: 0,
+            critical_throttle_minutes: 0,
+        });
+    }
+
     None
 }
 
 #[cfg(windows)]
+#[repr(C)]
+struct DevPropKey {
+    fmtid: [u8; 16],
+    pid: u32,
+}
+
+#[cfg(windows)]
+type CmGetDeviceIdListSizeWFn =
+    unsafe extern "system" fn(pul_len: *mut u32, psz_filter: *const u16, ul_flags: u32) -> u32;
+#[cfg(windows)]
+type CmGetDeviceIdListWFn = unsafe extern "system" fn(
+    psz_filter: *const u16,
+    buffer: *mut u16,
+    buffer_len: u32,
+    ul_flags: u32,
+) -> u32;
+#[cfg(windows)]
+type CmLocateDevNodeWFn = unsafe extern "system" fn(
+    pdn_dev_inst: *mut u32,
+    p_device_id: *const u16,
+    ul_flags: u32,
+) -> u32;
+#[cfg(windows)]
+type CmGetParentFn =
+    unsafe extern "system" fn(pdn_dev_inst: *mut u32, dn_dev_inst: u32, ul_flags: u32) -> u32;
+#[cfg(windows)]
+type CmGetDevNodePropertyWFn = unsafe extern "system" fn(
+    dn_dev_inst: u32,
+    property_key: *const DevPropKey,
+    property_type: *mut u32,
+    property_buffer: *mut u8,
+    property_buffer_size: *mut u32,
+    ul_flags: u32,
+) -> u32;
+
+#[cfg(windows)]
+struct CfgMgr32 {
+    _lib: libloading::Library,
+    cm_get_size: CmGetDeviceIdListSizeWFn,
+    cm_get_list: CmGetDeviceIdListWFn,
+    cm_locate: CmLocateDevNodeWFn,
+    cm_get_parent: CmGetParentFn,
+    cm_get_prop: CmGetDevNodePropertyWFn,
+}
+
+#[cfg(windows)]
+static CFGMGR32: std::sync::OnceLock<Option<CfgMgr32>> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+fn get_cfgmgr32() -> Option<&'static CfgMgr32> {
+    CFGMGR32
+        .get_or_init(|| unsafe {
+            let lib = libloading::Library::new("cfgmgr32.dll").ok()?;
+            let cm_get_size = *lib
+                .get::<CmGetDeviceIdListSizeWFn>(b"CM_Get_Device_ID_List_SizeW\0")
+                .ok()?;
+            let cm_get_list = *lib
+                .get::<CmGetDeviceIdListWFn>(b"CM_Get_Device_ID_ListW\0")
+                .ok()?;
+            let cm_locate = *lib
+                .get::<CmLocateDevNodeWFn>(b"CM_Locate_DevNodeW\0")
+                .ok()?;
+            let cm_get_parent = *lib.get::<CmGetParentFn>(b"CM_Get_Parent\0").ok()?;
+            let cm_get_prop = *lib
+                .get::<CmGetDevNodePropertyWFn>(b"CM_Get_DevNode_PropertyW\0")
+                .ok()?;
+            Some(CfgMgr32 {
+                _lib: lib,
+                cm_get_size,
+                cm_get_list,
+                cm_locate,
+                cm_get_parent,
+                cm_get_prop,
+            })
+        })
+        .as_ref()
+}
+
+#[cfg(windows)]
 fn query_pcie_link_status() -> (u8, u8, u8, u8, bool) {
-    (0, 0, 0, 0, false)
+    let cm = match get_cfgmgr32() {
+        Some(c) => c,
+        None => return (0, 0, 0, 0, false),
+    };
+
+    let pci_filter: Vec<u16> = "PCI\0".encode_utf16().collect();
+    let mut len: u32 = 0;
+    let cr = unsafe { (cm.cm_get_size)(&mut len, pci_filter.as_ptr(), 0) };
+    if cr != 0 || len == 0 {
+        return (0, 0, 0, 0, false);
+    }
+
+    let mut buf: Vec<u16> = vec![0; len as usize];
+    let cr = unsafe { (cm.cm_get_list)(pci_filter.as_ptr(), buf.as_mut_ptr(), len, 0) };
+    if cr != 0 {
+        return (0, 0, 0, 0, false);
+    }
+
+    let mut dev_ids = Vec::new();
+    let mut cur = Vec::new();
+    for &ch in &buf {
+        if ch == 0 {
+            if !cur.is_empty() {
+                dev_ids.push(String::from_utf16_lossy(&cur));
+                cur.clear();
+            }
+        } else {
+            cur.push(ch);
+        }
+    }
+
+    // DEVPKEY_Device_Service: {a45c254e-df1c-4efd-8020-67d146a850e0}, pid 6
+    let service_guid = [
+        0x4e, 0x25, 0x5c, 0xa4, 0x1c, 0xdf, 0xfd, 0x4e, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50,
+        0xe0,
+    ];
+
+    let mut target_dev_inst: Option<u32> = None;
+
+    for id in &dev_ids {
+        let id_u = id.to_uppercase();
+        if !id_u.starts_with("PCI\\") {
+            continue;
+        }
+
+        let dev_id_w: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut dev_inst: u32 = 0;
+        let cr = unsafe { (cm.cm_locate)(&mut dev_inst, dev_id_w.as_ptr(), 0) };
+        if cr != 0 {
+            continue;
+        }
+
+        // Query DEVPKEY_Device_Service
+        let key = DevPropKey {
+            fmtid: service_guid,
+            pid: 6,
+        };
+        let mut ptype = 0u32;
+        let mut val_buf = [0u8; 256];
+        let mut vlen = val_buf.len() as u32;
+        let prop_cr = unsafe {
+            (cm.cm_get_prop)(
+                dev_inst,
+                &key,
+                &mut ptype,
+                val_buf.as_mut_ptr(),
+                &mut vlen,
+                0,
+            )
+        };
+
+        let mut service_name = String::new();
+        if prop_cr == 0 && vlen >= 2 {
+            let u16_len = (vlen as usize) / 2;
+            let u16_slice: &[u16] =
+                unsafe { std::slice::from_raw_parts(val_buf.as_ptr() as *const u16, u16_len) };
+            let term_len = u16_slice.iter().position(|&c| c == 0).unwrap_or(u16_len);
+            service_name = String::from_utf16_lossy(&u16_slice[..term_len]);
+        }
+
+        let is_stornvme = service_name.eq_ignore_ascii_case("stornvme")
+            || service_name.to_lowercase().contains("nvme");
+        let is_nvme_class = id_u.contains("CC_0108");
+
+        if is_stornvme || is_nvme_class {
+            target_dev_inst = Some(dev_inst);
+            break;
+        }
+    }
+
+    let dev_inst = match target_dev_inst {
+        Some(inst) => inst,
+        None => return (0, 0, 0, 0, false),
+    };
+
+    // DEVPKEY_PciDevice_* {3ab22e31-8264-4b4e-9af5-a8d2d8e33e62}
+    let pci_guid = [
+        0x31, 0x2e, 0xb2, 0x3a, 0x64, 0x82, 0x4e, 0x4b, 0x9a, 0xf5, 0xa8, 0xd2, 0xd8, 0xe3, 0x3e,
+        0x62,
+    ];
+
+    let query_prop = |inst: u32, pid: u32| -> u32 {
+        let key = DevPropKey {
+            fmtid: pci_guid,
+            pid,
+        };
+        let mut ptype = 0u32;
+        let mut val_buf = [0u8; 8];
+        let mut vlen = val_buf.len() as u32;
+        let cr =
+            unsafe { (cm.cm_get_prop)(inst, &key, &mut ptype, val_buf.as_mut_ptr(), &mut vlen, 0) };
+        if cr == 0 && vlen >= 4 {
+            u32::from_le_bytes([val_buf[0], val_buf[1], val_buf[2], val_buf[3]])
+        } else {
+            0
+        }
+    };
+
+    let cur_speed = query_prop(dev_inst, 9) as u8; // CurrentLinkSpeed
+    let cur_width = query_prop(dev_inst, 10) as u8; // CurrentLinkWidth
+    let max_speed = query_prop(dev_inst, 11) as u8; // MaxLinkSpeed
+    let max_width = query_prop(dev_inst, 12) as u8; // MaxLinkWidth
+
+    // Query parent PCIe Root Port link capabilities
+    let mut parent_inst: u32 = 0;
+    let parent_cr = unsafe { (cm.cm_get_parent)(&mut parent_inst, dev_inst, 0) };
+    let (parent_max_speed, parent_max_width) = if parent_cr == 0 && parent_inst != 0 {
+        // Try pid 12 (MaxLinkWidth) or pid 13 (SupportedLinkWidth)
+        let mut w = query_prop(parent_inst, 12) as u8;
+        if w == 0 {
+            w = query_prop(parent_inst, 13) as u8;
+        }
+        // Try pid 11 (MaxLinkSpeed) or pid 31 (SupportedLinkSpeed)
+        let mut s = query_prop(parent_inst, 11) as u8;
+        if s == 0 {
+            s = query_prop(parent_inst, 31) as u8;
+        }
+        (s, w)
+    } else {
+        (0, 0)
+    };
+
+    let effective_max_width = if parent_max_width > 0 && max_width > 0 {
+        max_width.min(parent_max_width)
+    } else if max_width > 0 {
+        max_width
+    } else {
+        parent_max_width
+    };
+
+    let effective_max_speed = if parent_max_speed > 0 && max_speed > 0 {
+        max_speed.min(parent_max_speed)
+    } else if max_speed > 0 {
+        max_speed
+    } else {
+        parent_max_speed
+    };
+
+    let is_degraded = cur_width > 0 && effective_max_width > 0 && cur_width < effective_max_width;
+
+    (
+        cur_speed,
+        cur_width,
+        effective_max_speed,
+        effective_max_width,
+        is_degraded,
+    )
 }
 
 #[cfg(not(windows))]

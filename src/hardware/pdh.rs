@@ -4,6 +4,8 @@
 #[cfg(windows)]
 pub mod win_pdh {
     use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     pub const PDH_FMT_DOUBLE: u32 = 0x00000200;
 
@@ -58,6 +60,7 @@ pub mod win_pdh {
     pub struct PdhTelemetryState {
         query: usize,
         counters: HashMap<String, usize>,
+        last_collect: Mutex<Option<Instant>>,
     }
 
     impl PdhTelemetryState {
@@ -71,6 +74,7 @@ pub mod win_pdh {
             let mut state = Self {
                 query: q,
                 counters: HashMap::new(),
+                last_collect: Mutex::new(None),
             };
 
             // Register all standard counters
@@ -113,6 +117,9 @@ pub mod win_pdh {
             unsafe {
                 PdhCollectQueryData(state.query);
             }
+            if let Ok(mut guard) = state.last_collect.lock() {
+                *guard = Some(Instant::now());
+            }
 
             Some(state)
         }
@@ -131,7 +138,19 @@ pub mod win_pdh {
         }
 
         pub fn collect(&self) -> bool {
-            unsafe { PdhCollectQueryData(self.query) == 0 }
+            if let Ok(guard) = self.last_collect.lock() {
+                if let Some(last) = *guard {
+                    let elapsed = last.elapsed();
+                    if elapsed < Duration::from_millis(40) {
+                        std::thread::sleep(Duration::from_millis(40) - elapsed);
+                    }
+                }
+            }
+            let res = unsafe { PdhCollectQueryData(self.query) == 0 };
+            if let Ok(mut guard) = self.last_collect.lock() {
+                *guard = Some(Instant::now());
+            }
+            res
         }
 
         pub fn read_double(&self, key: &str) -> Option<f64> {

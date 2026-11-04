@@ -152,11 +152,7 @@ fn run_interactive_tui(
     let mut tick_index = 0;
 
     let tracked_patterns = if opts.tracked_processes.is_empty() {
-        vec![
-            "llama".to_string(),
-            "device-commander".to_string(),
-            "python".to_string(),
-        ]
+        vec!["*".to_string()]
     } else {
         opts.tracked_processes.clone()
     };

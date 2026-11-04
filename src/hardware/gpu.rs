@@ -65,9 +65,26 @@ fn collect_windows_gpu(
     engine_items: &[(String, f64)],
     pdh_state: Option<&PdhTelemetryState>,
 ) -> IntelArcGpuSnapshot {
-    let gpu_adapter = adapters.iter().find(|a| a.is_gpu);
+    let gpu_adapters: Vec<&AdapterInfo> = adapters.iter().filter(|a| a.is_gpu).collect();
+    let adapter = gpu_adapters
+        .iter()
+        .find(|a| {
+            let pat = a.luid.pdh_pattern().to_lowercase();
+            engine_items
+                .iter()
+                .any(|(name, _)| name.to_lowercase().contains(&pat))
+                || pdh_state
+                    .map(|p| {
+                        p.read_array("gpu_adapter_mem")
+                            .iter()
+                            .any(|(name, _)| name.to_lowercase().contains(&pat))
+                    })
+                    .unwrap_or(false)
+        })
+        .copied()
+        .or_else(|| gpu_adapters.first().copied());
 
-    let Some(adapter) = gpu_adapter else {
+    let Some(adapter) = adapter else {
         return IntelArcGpuSnapshot {
             name: "Intel(R) Arc(TM) 140V GPU".to_string(),
             architecture: "8 Xe2-LPG cores (Battlemage)".to_string(),
@@ -130,18 +147,33 @@ fn collect_windows_gpu(
     }
 
     if let Some(pdh) = pdh_state {
+        let adapter_mem = pdh.read_array("gpu_adapter_mem");
+        for (name, bytes) in &adapter_mem {
+            let name_lower = name.to_lowercase();
+            if name_lower.contains(&luid_pattern) {
+                let mb = (bytes / (1024.0 * 1024.0)) as u64;
+                if mb > 0 {
+                    shared_memory_used_mb = mb;
+                }
+            }
+        }
+
         let mem_items = pdh.read_array("gpu_proc_mem");
+        let mut proc_sum_mb = 0u64;
         for (name, bytes) in mem_items {
             let name_lower = name.to_lowercase();
             if name_lower.contains(&luid_pattern) {
                 let mb = (bytes / (1024.0 * 1024.0)) as u64;
-                shared_memory_used_mb += mb;
+                proc_sum_mb += mb;
                 if let Some(pid) = extract_pid_from_instance(&name_lower) {
                     if let Some(proc) = active_processes.iter_mut().find(|p| p.pid == pid) {
                         proc.shared_memory_mb = mb;
                     }
                 }
             }
+        }
+        if shared_memory_used_mb == 0 {
+            shared_memory_used_mb = proc_sum_mb;
         }
     }
 

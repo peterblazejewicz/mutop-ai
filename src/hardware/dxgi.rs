@@ -75,6 +75,12 @@ pub mod win_dxgi {
         0x90,
     ];
 
+    // DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML = {b71b0d41-1088-422f-a27c-0250b7d3a988}
+    const DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML: [u8; 16] = [
+        0x41, 0x0d, 0x1b, 0xb7, 0x88, 0x10, 0x2f, 0x42, 0xa2, 0x7c, 0x02, 0x50, 0xb7, 0xd3, 0xa9,
+        0x88,
+    ];
+
     #[repr(C)]
     struct DxcoreHardwareId {
         vendor_id: u32,
@@ -122,116 +128,139 @@ pub mod win_dxgi {
             let release_factory: unsafe extern "system" fn(this: *mut c_void) -> u32 =
                 std::mem::transmute(release_factory_ptr);
 
-            // Filter for NPU and Compute attributes
+            // Query single attributes independently to avoid logical AND filtering
             let filter_attrs = [
                 DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU,
                 DXCORE_ADAPTER_ATTRIBUTE_D3D12_CORE_COMPUTE,
+                DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML,
             ];
 
-            let mut list: *mut c_void = std::ptr::null_mut();
-            if create_adapter_list(
-                factory,
-                filter_attrs.len() as u32,
-                filter_attrs.as_ptr(),
-                &IID_IDXCORE_ADAPTER_LIST,
-                &mut list,
-            ) == 0
-                && !list.is_null()
-            {
-                let list_vtable = *(list as *const *const usize);
-                let get_adapter_count_ptr = *list_vtable.add(4);
-                let get_adapter_count: unsafe extern "system" fn(this: *mut c_void) -> u32 =
-                    std::mem::transmute(get_adapter_count_ptr);
+            for attr in &filter_attrs {
+                let mut list: *mut c_void = std::ptr::null_mut();
+                if create_adapter_list(factory, 1, attr, &IID_IDXCORE_ADAPTER_LIST, &mut list) == 0
+                    && !list.is_null()
+                {
+                    let list_vtable = *(list as *const *const usize);
+                    let get_adapter_count_ptr = *list_vtable.add(4);
+                    let get_adapter_count: unsafe extern "system" fn(this: *mut c_void) -> u32 =
+                        std::mem::transmute(get_adapter_count_ptr);
 
-                let get_adapter_ptr = *list_vtable.add(3);
-                let get_adapter: unsafe extern "system" fn(
-                    this: *mut c_void,
-                    index: u32,
-                    riid: *const [u8; 16],
-                    ppv_adapter: *mut *mut c_void,
-                ) -> i32 = std::mem::transmute(get_adapter_ptr);
+                    let get_adapter_ptr = *list_vtable.add(3);
+                    let get_adapter: unsafe extern "system" fn(
+                        this: *mut c_void,
+                        index: u32,
+                        riid: *const [u8; 16],
+                        ppv_adapter: *mut *mut c_void,
+                    ) -> i32 = std::mem::transmute(get_adapter_ptr);
 
-                let release_list_ptr = *list_vtable.add(2);
-                let release_list: unsafe extern "system" fn(this: *mut c_void) -> u32 =
-                    std::mem::transmute(release_list_ptr);
+                    let release_list_ptr = *list_vtable.add(2);
+                    let release_list: unsafe extern "system" fn(this: *mut c_void) -> u32 =
+                        std::mem::transmute(release_list_ptr);
 
-                let count = get_adapter_count(list);
-                for i in 0..count {
-                    let mut adapter: *mut c_void = std::ptr::null_mut();
-                    if get_adapter(list, i, &IID_IDXCORE_ADAPTER, &mut adapter) == 0
-                        && !adapter.is_null()
-                    {
-                        let adapter_vtable = *(adapter as *const *const usize);
-                        let get_property_ptr = *adapter_vtable.add(6);
-                        let get_property: unsafe extern "system" fn(
-                            this: *mut c_void,
-                            property: u32,
-                            buffer_size: usize,
-                            property_data: *mut c_void,
-                        )
-                            -> i32 = std::mem::transmute(get_property_ptr);
+                    let count = get_adapter_count(list);
+                    for i in 0..count {
+                        let mut adapter: *mut c_void = std::ptr::null_mut();
+                        if get_adapter(list, i, &IID_IDXCORE_ADAPTER, &mut adapter) == 0
+                            && !adapter.is_null()
+                        {
+                            let adapter_vtable = *(adapter as *const *const usize);
+                            let get_property_ptr = *adapter_vtable.add(6);
+                            let get_property: unsafe extern "system" fn(
+                                this: *mut c_void,
+                                property: u32,
+                                buffer_size: usize,
+                                property_data: *mut c_void,
+                            )
+                                -> i32 = std::mem::transmute(get_property_ptr);
 
-                        let release_adapter_ptr = *adapter_vtable.add(2);
-                        let release_adapter: unsafe extern "system" fn(this: *mut c_void) -> u32 =
-                            std::mem::transmute(release_adapter_ptr);
+                            let get_property_size_ptr = *adapter_vtable.add(7);
+                            let get_property_size: unsafe extern "system" fn(
+                                this: *mut c_void,
+                                property: u32,
+                                buffer_size: *mut usize,
+                            )
+                                -> i32 = std::mem::transmute(get_property_size_ptr);
 
-                        // Property 0: InstanceLuid
-                        let mut luid = Luid::default();
-                        let _ = get_property(
-                            adapter,
-                            0, // InstanceLuid
-                            std::mem::size_of::<Luid>(),
-                            &mut luid as *mut _ as *mut c_void,
-                        );
+                            let release_adapter_ptr = *adapter_vtable.add(2);
+                            let release_adapter: unsafe extern "system" fn(
+                                this: *mut c_void,
+                            )
+                                -> u32 = std::mem::transmute(release_adapter_ptr);
 
-                        // Property 2: DriverDescription (null-terminated c_char)
-                        let mut desc_buf = [0u8; 256];
-                        let _ = get_property(
-                            adapter,
-                            2, // DriverDescription
-                            desc_buf.len(),
-                            desc_buf.as_mut_ptr() as *mut c_void,
-                        );
-                        let desc_len = desc_buf
-                            .iter()
-                            .position(|&c| c == 0)
-                            .unwrap_or(desc_buf.len());
-                        let description =
-                            String::from_utf8_lossy(&desc_buf[..desc_len]).to_string();
+                            // Property 0: InstanceLuid
+                            let mut luid = Luid::default();
+                            let _ = get_property(
+                                adapter,
+                                0, // InstanceLuid
+                                std::mem::size_of::<Luid>(),
+                                &mut luid as *mut _ as *mut c_void,
+                            );
 
-                        // Property 3: HardwareID
-                        let mut hwid: DxcoreHardwareId = std::mem::zeroed();
-                        let _ = get_property(
-                            adapter,
-                            3, // HardwareID
-                            std::mem::size_of::<DxcoreHardwareId>(),
-                            &mut hwid as *mut _ as *mut c_void,
-                        );
+                            // Property 2: DriverDescription (null-terminated c_char)
+                            let mut desc_size: usize = 0;
+                            let mut description = String::new();
+                            if get_property_size(adapter, 2, &mut desc_size) == 0 && desc_size > 0 {
+                                let mut desc_buf = vec![0u8; desc_size];
+                                if get_property(
+                                    adapter,
+                                    2, // DriverDescription
+                                    desc_size,
+                                    desc_buf.as_mut_ptr() as *mut c_void,
+                                ) == 0
+                                {
+                                    let desc_len =
+                                        desc_buf.iter().position(|&c| c == 0).unwrap_or(desc_size);
+                                    description =
+                                        String::from_utf8_lossy(&desc_buf[..desc_len]).to_string();
+                                }
+                            }
 
-                        // Property 9: SharedSystemMemory (u64 bytes)
-                        let mut shared_bytes: u64 = 0;
-                        let _ = get_property(
-                            adapter,
-                            9, // SharedSystemMemory
-                            std::mem::size_of::<u64>(),
-                            &mut shared_bytes as *mut _ as *mut c_void,
-                        );
+                            // Property 3: HardwareID
+                            let mut hwid: DxcoreHardwareId = std::mem::zeroed();
+                            let _ = get_property(
+                                adapter,
+                                3, // HardwareID
+                                std::mem::size_of::<DxcoreHardwareId>(),
+                                &mut hwid as *mut _ as *mut c_void,
+                            );
 
-                        results.push(AdapterInfo {
-                            description,
-                            vendor_id: hwid.vendor_id,
-                            device_id: hwid.device_id,
-                            luid,
-                            shared_sys_mem_mb: shared_bytes / (1024 * 1024),
-                            dedicated_video_mem_mb: 0,
-                            is_npu: true,
-                            is_gpu: false,
-                        });
+                            // Property 9: SharedSystemMemory (u64 bytes)
+                            let mut shared_bytes: u64 = 0;
+                            let _ = get_property(
+                                adapter,
+                                9, // SharedSystemMemory
+                                std::mem::size_of::<u64>(),
+                                &mut shared_bytes as *mut _ as *mut c_void,
+                            );
 
-                        release_adapter(adapter);
+                            let desc_lower = description.to_lowercase();
+                            let is_intel_npu = hwid.vendor_id == 0x8086 && hwid.device_id == 0x643E;
+                            let is_npu = is_intel_npu
+                                || desc_lower.contains("ai boost")
+                                || desc_lower.contains("npu");
+
+                            if is_intel_npu && description.is_empty() {
+                                description = "Intel(R) AI Boost".to_string();
+                            }
+
+                            if is_npu && !results.iter().any(|r| r.luid.to_u64() == luid.to_u64()) {
+                                results.push(AdapterInfo {
+                                    description,
+                                    vendor_id: hwid.vendor_id,
+                                    device_id: hwid.device_id,
+                                    luid,
+                                    shared_sys_mem_mb: shared_bytes / (1024 * 1024),
+                                    dedicated_video_mem_mb: 0,
+                                    is_npu: true,
+                                    is_gpu: false,
+                                });
+                            }
+
+                            release_adapter(adapter);
+                        }
                     }
+                    release_list(list);
                 }
-                release_list(list);
             }
             release_factory(factory);
         }
@@ -348,6 +377,29 @@ pub mod win_dxgi {
 
         results
     }
+
+    pub fn enumerate_all_adapters() -> Vec<AdapterInfo> {
+        let mut adapters = enumerate_dxgi_adapters();
+        let npu_adapters = enumerate_dxcore_npu_adapters();
+        let gpu_uma_budget = adapters
+            .iter()
+            .find(|a| a.is_gpu)
+            .map(|a| a.shared_sys_mem_mb)
+            .unwrap_or(0);
+
+        for mut npu in npu_adapters {
+            if npu.shared_sys_mem_mb == 0 && gpu_uma_budget > 0 {
+                npu.shared_sys_mem_mb = gpu_uma_budget;
+            }
+            if !adapters
+                .iter()
+                .any(|a| a.luid.to_u64() == npu.luid.to_u64())
+            {
+                adapters.push(npu);
+            }
+        }
+        adapters
+    }
 }
 
 #[cfg(not(windows))]
@@ -392,6 +444,10 @@ pub mod not_win_dxgi {
     }
 
     pub fn enumerate_dxgi_adapters() -> Vec<AdapterInfo> {
+        Vec::new()
+    }
+
+    pub fn enumerate_all_adapters() -> Vec<AdapterInfo> {
         Vec::new()
     }
 }

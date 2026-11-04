@@ -25,6 +25,7 @@ pub struct ProcessesCollectorState {
     pub cached_matched_pids: Vec<(u32, String)>,
     pub last_thread_poll: Option<Instant>,
     pub cached_thread_info: HashMap<u32, CachedThreadInfo>,
+    pub cached_results: Vec<ProcessAffinityProfile>,
 }
 
 #[derive(Clone)]
@@ -72,13 +73,13 @@ pub fn collect_tracked_processes(
 }
 
 fn mock_tracked_processes(include_threads: bool) -> Vec<ProcessAffinityProfile> {
-    let mut core_dist = HashMap::new();
-    core_dist.insert("core0".to_string(), 2);
-    core_dist.insert("core1".to_string(), 1);
-    core_dist.insert("core2".to_string(), 1);
-    core_dist.insert("core3".to_string(), 1);
+    let mut core_dist1 = HashMap::new();
+    core_dist1.insert("core0".to_string(), 2);
+    core_dist1.insert("core1".to_string(), 1);
+    core_dist1.insert("core2".to_string(), 1);
+    core_dist1.insert("core3".to_string(), 1);
 
-    let threads = vec![
+    let threads1 = vec![
         LunarLakeThreadPlacement {
             tid: 1421,
             name: "llama-main".to_string(),
@@ -116,24 +117,109 @@ fn mock_tracked_processes(include_threads: bool) -> Vec<ProcessAffinityProfile> 
         },
     ];
 
-    vec![ProcessAffinityProfile {
-        pid: 1420,
-        name: "llama-server.exe".to_string(),
-        cmdline: "llama-server.exe -m /models/functiongemma-270m.gguf -ngl 99".to_string(),
-        cpu_pct: 28.5,
-        lion_cove_p_cpu_pct: 28.5,
-        skymont_lpe_cpu_pct: 0.0,
-        cpu_working_set_mb: 384,
-        gpu_shared_mb: 768,
-        npu_shared_mb: 0,
-        commit_private_mb: 450,
-        thread_count: 5,
-        lion_cove_p_threads: 5,
-        skymont_lpe_threads: 0,
-        is_eco_qos: false,
-        core_distribution: core_dist,
-        threads: if include_threads { threads } else { Vec::new() },
-    }]
+    let mut core_dist2 = HashMap::new();
+    core_dist2.insert("core5".to_string(), 1);
+    core_dist2.insert("core6".to_string(), 1);
+
+    let threads2 = vec![
+        LunarLakeThreadPlacement {
+            tid: 2829,
+            name: "mutop-tui".to_string(),
+            cpu_core: 5,
+            microarch: CoreMicroarch::SkymontLpE,
+            is_eco_qos: true,
+        },
+        LunarLakeThreadPlacement {
+            tid: 2830,
+            name: "mutop-sampler".to_string(),
+            cpu_core: 6,
+            microarch: CoreMicroarch::SkymontLpE,
+            is_eco_qos: true,
+        },
+    ];
+
+    vec![
+        ProcessAffinityProfile {
+            pid: 1420,
+            name: "llama-server.exe".to_string(),
+            cmdline: "llama-server.exe -m /models/functiongemma-270m.gguf -ngl 99".to_string(),
+            cpu_pct: 28.5,
+            lion_cove_p_cpu_pct: 28.5,
+            skymont_lpe_cpu_pct: 0.0,
+            cpu_working_set_mb: 384,
+            gpu_shared_mb: 768,
+            npu_shared_mb: 0,
+            commit_private_mb: 450,
+            thread_count: 5,
+            lion_cove_p_threads: 5,
+            skymont_lpe_threads: 0,
+            is_eco_qos: false,
+            core_distribution: core_dist1,
+            threads: if include_threads {
+                threads1
+            } else {
+                Vec::new()
+            },
+        },
+        ProcessAffinityProfile {
+            pid: 2828,
+            name: "mutop-ai.exe".to_string(),
+            cmdline: "mutop-ai.exe".to_string(),
+            cpu_pct: 0.4,
+            lion_cove_p_cpu_pct: 0.0,
+            skymont_lpe_cpu_pct: 0.4,
+            cpu_working_set_mb: 14,
+            gpu_shared_mb: 0,
+            npu_shared_mb: 0,
+            commit_private_mb: 8,
+            thread_count: 2,
+            lion_cove_p_threads: 0,
+            skymont_lpe_threads: 2,
+            is_eco_qos: true,
+            core_distribution: core_dist2,
+            threads: if include_threads {
+                threads2
+            } else {
+                Vec::new()
+            },
+        },
+        ProcessAffinityProfile {
+            pid: 3310,
+            name: "python.exe".to_string(),
+            cmdline: "python train.py".to_string(),
+            cpu_pct: 12.0,
+            lion_cove_p_cpu_pct: 12.0,
+            skymont_lpe_cpu_pct: 0.0,
+            cpu_working_set_mb: 512,
+            gpu_shared_mb: 256,
+            npu_shared_mb: 0,
+            commit_private_mb: 600,
+            thread_count: 4,
+            lion_cove_p_threads: 4,
+            skymont_lpe_threads: 0,
+            is_eco_qos: false,
+            core_distribution: HashMap::new(),
+            threads: Vec::new(),
+        },
+        ProcessAffinityProfile {
+            pid: 4,
+            name: "System".to_string(),
+            cmdline: "System".to_string(),
+            cpu_pct: 1.2,
+            lion_cove_p_cpu_pct: 0.6,
+            skymont_lpe_cpu_pct: 0.6,
+            cpu_working_set_mb: 4,
+            gpu_shared_mb: 0,
+            npu_shared_mb: 0,
+            commit_private_mb: 2,
+            thread_count: 8,
+            lion_cove_p_threads: 4,
+            skymont_lpe_threads: 4,
+            is_eco_qos: false,
+            core_distribution: HashMap::new(),
+            threads: Vec::new(),
+        },
+    ]
 }
 
 #[cfg(windows)]
@@ -248,14 +334,53 @@ fn collect_windows_processes(
         THREAD_QUERY_LIMITED_INFORMATION,
     };
 
+    let match_all = patterns.iter().any(|p| p == "*");
+
+    let should_scan_threads = state
+        .last_thread_poll
+        .map(|t| t.elapsed() >= std::time::Duration::from_millis(1000))
+        .unwrap_or(true);
+
+    if match_all && !should_scan_threads && !state.cached_results.is_empty() {
+        return state.cached_results.clone();
+    }
+
     let gpu_luid = adapters
         .iter()
-        .find(|a| a.is_gpu)
+        .filter(|a| a.is_gpu)
+        .find(|a| {
+            let pat = a.luid.pdh_pattern().to_lowercase();
+            pdh_state
+                .map(|p| {
+                    p.read_array("gpu_proc_mem")
+                        .iter()
+                        .any(|(name, _)| name.to_lowercase().contains(&pat))
+                })
+                .unwrap_or(false)
+        })
+        .or_else(|| adapters.iter().find(|a| a.is_gpu))
         .map(|a| a.luid.pdh_pattern().to_lowercase());
+
     let npu_luid = adapters
         .iter()
         .find(|a| a.is_npu)
-        .map(|a| a.luid.pdh_pattern().to_lowercase());
+        .map(|a| a.luid.pdh_pattern().to_lowercase())
+        .or_else(|| {
+            pdh_state.and_then(|pdh| {
+                let engines = pdh.read_array("gpu_engines");
+                engines.iter().find_map(|(name, _)| {
+                    let nl = name.to_lowercase();
+                    if nl.contains("engtype_neural") || nl.contains("engtype_npu") {
+                        if let Some(pos) = nl.find("luid_0x") {
+                            if nl.len() >= pos + 23 {
+                                return Some(nl[pos..pos + 23].to_string());
+                            }
+                        }
+                    }
+                    None
+                })
+            })
+        });
 
     let mut proc_shared_mem: HashMap<u32, (u64, u64)> = HashMap::new();
     if let Some(pdh) = pdh_state {
@@ -301,9 +426,11 @@ fn collect_windows_processes(
                     let name = String::from_utf16_lossy(&pe.szExeFile[..nul_pos]);
                     let name_lower = name.to_lowercase();
 
-                    if patterns
-                        .iter()
-                        .any(|pat| name_lower.contains(&pat.to_lowercase()))
+                    if pe.th32ProcessID > 0
+                        && (match_all
+                            || patterns
+                                .iter()
+                                .any(|pat| name_lower.contains(&pat.to_lowercase())))
                     {
                         matched.push((pe.th32ProcessID, name));
                     }
@@ -319,101 +446,129 @@ fn collect_windows_processes(
         }
     }
 
-    let should_scan_threads = state
-        .last_thread_poll
-        .map(|t| t.elapsed() >= std::time::Duration::from_millis(1000))
-        .unwrap_or(true);
-
-    if should_scan_threads && !state.cached_matched_pids.is_empty() {
-        let snap_th = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-        if snap_th != INVALID_HANDLE_VALUE {
-            let mut pid_to_threads: HashMap<u32, Vec<u32>> = HashMap::new();
-            let mut te: THREADENTRY32 = unsafe { std::mem::zeroed() };
-            te.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-
-            if unsafe { Thread32First(snap_th, &mut te) } != 0 {
-                loop {
-                    if state
-                        .cached_matched_pids
-                        .iter()
-                        .any(|(p, _)| *p == te.th32OwnerProcessID)
+    if should_scan_threads {
+        state.last_thread_poll = Some(Instant::now());
+        if !state.cached_matched_pids.is_empty() {
+            let mut target_thread_pids: std::collections::HashSet<u32> =
+                std::collections::HashSet::new();
+            if match_all {
+                for (pid, name) in &state.cached_matched_pids {
+                    let nl = name.to_lowercase();
+                    if nl.contains("llama")
+                        || nl.contains("python")
+                        || nl.contains("mutop")
+                        || nl.contains("device-commander")
+                        || nl.contains("qnn")
+                        || proc_shared_mem.contains_key(pid)
                     {
-                        pid_to_threads
-                            .entry(te.th32OwnerProcessID)
-                            .or_default()
-                            .push(te.th32ThreadID);
-                    }
-                    if unsafe { Thread32Next(snap_th, &mut te) } == 0 {
-                        break;
+                        target_thread_pids.insert(*pid);
                     }
                 }
+                let mut top_pids: Vec<(u32, u64)> = state
+                    .prev_procs
+                    .iter()
+                    .map(|(&pid, s)| (pid, s.total_100ns))
+                    .collect();
+                top_pids.sort_by(|a, b| b.1.cmp(&a.1));
+                for (pid, _) in top_pids.into_iter().take(25) {
+                    target_thread_pids.insert(pid);
+                }
             }
-            unsafe { CloseHandle(snap_th) };
 
-            for (&pid_u32, tids) in &pid_to_threads {
-                let mut info = CachedThreadInfo::default();
-                for &tid in tids {
-                    let h_thread = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, tid) };
-                    if !h_thread.is_null() && h_thread != INVALID_HANDLE_VALUE {
-                        let mut ideal_proc = ProcessorNumber::default();
-                        let _ = unsafe { GetThreadIdealProcessorEx(h_thread, &mut ideal_proc) };
-                        let core = ideal_proc.number as u32;
+            let snap_th = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+            if snap_th != INVALID_HANDLE_VALUE {
+                let mut pid_to_threads: HashMap<u32, Vec<u32>> = HashMap::new();
+                let mut te: THREADENTRY32 = unsafe { std::mem::zeroed() };
+                te.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
 
-                        let microarch = if let Some(&arch) = topology.get(core as usize) {
-                            arch
-                        } else if core < 4 {
-                            CoreMicroarch::LionCoveP
+                if unsafe { Thread32First(snap_th, &mut te) } != 0 {
+                    loop {
+                        let should_track = if match_all {
+                            target_thread_pids.contains(&te.th32OwnerProcessID)
                         } else {
-                            CoreMicroarch::SkymontLpE
+                            state
+                                .cached_matched_pids
+                                .iter()
+                                .any(|(p, _)| *p == te.th32OwnerProcessID)
                         };
-
-                        let mut cycle_time: u64 = 0;
-                        unsafe { QueryThreadCycleTime(h_thread, &mut cycle_time) };
-
-                        if microarch == CoreMicroarch::LionCoveP {
-                            info.p_cycles += cycle_time;
-                            info.p_threads += 1;
-                        } else {
-                            info.lpe_cycles += cycle_time;
-                            info.lpe_threads += 1;
+                        if should_track {
+                            pid_to_threads
+                                .entry(te.th32OwnerProcessID)
+                                .or_default()
+                                .push(te.th32ThreadID);
                         }
-
-                        let mut throttling = ThreadPowerThrottlingState {
-                            version: 1,
-                            control_flags: 0,
-                            state_mask: 0,
-                        };
-                        let thread_eco_qos = unsafe {
-                            GetThreadInformation(
-                                h_thread,
-                                1, // ThreadPowerThrottling
-                                &mut throttling as *mut _ as *mut std::ffi::c_void,
-                                std::mem::size_of::<ThreadPowerThrottlingState>() as u32,
-                            ) != 0
-                                && (throttling.control_flags & 1) != 0
-                        };
-                        if thread_eco_qos {
-                            info.has_eco_qos = true;
+                        if unsafe { Thread32Next(snap_th, &mut te) } == 0 {
+                            break;
                         }
-
-                        *info.core_dist.entry(format!("core{}", core)).or_insert(0) += 1;
-
-                        if include_threads {
-                            info.threads.push(LunarLakeThreadPlacement {
-                                tid,
-                                name: format!("thread-{}", tid),
-                                cpu_core: core,
-                                microarch,
-                                is_eco_qos: thread_eco_qos,
-                            });
-                        }
-
-                        unsafe { CloseHandle(h_thread) };
                     }
                 }
-                state.cached_thread_info.insert(pid_u32, info);
+                unsafe { CloseHandle(snap_th) };
+
+                for (&pid_u32, tids) in &pid_to_threads {
+                    let mut info = CachedThreadInfo::default();
+                    for &tid in tids {
+                        let h_thread =
+                            unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, tid) };
+                        if !h_thread.is_null() && h_thread != INVALID_HANDLE_VALUE {
+                            let mut ideal_proc = ProcessorNumber::default();
+                            let _ = unsafe { GetThreadIdealProcessorEx(h_thread, &mut ideal_proc) };
+                            let core = ideal_proc.number as u32;
+
+                            let microarch = if let Some(&arch) = topology.get(core as usize) {
+                                arch
+                            } else if core < 4 {
+                                CoreMicroarch::LionCoveP
+                            } else {
+                                CoreMicroarch::SkymontLpE
+                            };
+
+                            let mut cycle_time: u64 = 0;
+                            unsafe { QueryThreadCycleTime(h_thread, &mut cycle_time) };
+
+                            if microarch == CoreMicroarch::LionCoveP {
+                                info.p_cycles += cycle_time;
+                                info.p_threads += 1;
+                            } else {
+                                info.lpe_cycles += cycle_time;
+                                info.lpe_threads += 1;
+                            }
+
+                            let mut throttling = ThreadPowerThrottlingState {
+                                version: 1,
+                                control_flags: 0,
+                                state_mask: 0,
+                            };
+                            let thread_eco_qos = unsafe {
+                                GetThreadInformation(
+                                    h_thread,
+                                    1, // ThreadPowerThrottling
+                                    &mut throttling as *mut _ as *mut std::ffi::c_void,
+                                    std::mem::size_of::<ThreadPowerThrottlingState>() as u32,
+                                ) != 0
+                                    && (throttling.control_flags & 1) != 0
+                            };
+                            if thread_eco_qos {
+                                info.has_eco_qos = true;
+                            }
+
+                            *info.core_dist.entry(format!("core{}", core)).or_insert(0) += 1;
+
+                            if include_threads {
+                                info.threads.push(LunarLakeThreadPlacement {
+                                    tid,
+                                    name: format!("thread-{}", tid),
+                                    cpu_core: core,
+                                    microarch,
+                                    is_eco_qos: thread_eco_qos,
+                                });
+                            }
+
+                            unsafe { CloseHandle(h_thread) };
+                        }
+                    }
+                    state.cached_thread_info.insert(pid_u32, info);
+                }
             }
-            state.last_thread_poll = Some(Instant::now());
         }
     }
 
@@ -523,6 +678,7 @@ fn collect_windows_processes(
     }
 
     state.prev_procs = new_procs;
+    state.cached_results = results.clone();
     results
 }
 

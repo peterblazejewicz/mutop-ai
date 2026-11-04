@@ -82,7 +82,10 @@ fn collect_windows_npu(
 
         for (name, _) in engine_items {
             let name_lower = name.to_lowercase();
-            if name_lower.contains("engtype_compute") || name_lower.contains("engtype_npu") {
+            if name_lower.contains("engtype_compute")
+                || name_lower.contains("engtype_npu")
+                || name_lower.contains("engtype_neural")
+            {
                 if let Some(luid_pat) = extract_luid_pattern(&name_lower) {
                     if !gpu_luids.contains(&luid_pat) && !luid_pat.contains("0x00000000_0x00000000")
                     {
@@ -116,7 +119,7 @@ fn collect_windows_npu(
                 "NPU 4 (PCI 0x8086:0x643E)".to_string(),
                 Some(luid_val),
                 Some(pat),
-                15360,
+                0,
             ),
             _ => (
                 "Intel(R) AI Boost".to_string(),
@@ -128,14 +131,26 @@ fn collect_windows_npu(
         },
     };
 
+    let gpu_shared_budget = adapters
+        .iter()
+        .find(|a| a.is_gpu)
+        .map(|a| a.shared_sys_mem_mb)
+        .filter(|&m| m > 0)
+        .unwrap_or(9156);
+    let budget_mb = if budget_mb == 0 {
+        gpu_shared_budget
+    } else {
+        budget_mb
+    };
+
     let mut utilization_pct = 0.0f32;
     let mut shared_memory_used_mb = 0u64;
     let mut active_processes = Vec::new();
 
-    if let Some(pat) = luid_pattern {
+    if let Some(ref pat) = luid_pattern {
         for (inst_name, val) in engine_items {
             let inst_lower = inst_name.to_lowercase();
-            if inst_lower.contains(&pat) {
+            if inst_lower.contains(pat) {
                 let v = *val as f32;
                 utilization_pct += v;
                 if let Some(pid) = extract_pid_from_instance(&inst_lower) {
@@ -156,18 +171,33 @@ fn collect_windows_npu(
         }
 
         if let Some(pdh) = pdh_state {
+            let adapter_mem = pdh.read_array("gpu_adapter_mem");
+            for (name, bytes) in &adapter_mem {
+                let name_lower = name.to_lowercase();
+                if name_lower.contains(pat) {
+                    let mb = (bytes / (1024.0 * 1024.0)) as u64;
+                    if mb > 0 {
+                        shared_memory_used_mb = mb;
+                    }
+                }
+            }
+
             let mem_items = pdh.read_array("gpu_proc_mem");
+            let mut proc_sum_mb = 0u64;
             for (name, bytes) in mem_items {
                 let name_lower = name.to_lowercase();
-                if name_lower.contains(&pat) {
+                if name_lower.contains(pat) {
                     let mb = (bytes / (1024.0 * 1024.0)) as u64;
-                    shared_memory_used_mb += mb;
+                    proc_sum_mb += mb;
                     if let Some(pid) = extract_pid_from_instance(&name_lower) {
                         if let Some(proc) = active_processes.iter_mut().find(|p| p.pid == pid) {
                             proc.shared_memory_mb = mb;
                         }
                     }
                 }
+            }
+            if shared_memory_used_mb == 0 {
+                shared_memory_used_mb = proc_sum_mb;
             }
         }
     }

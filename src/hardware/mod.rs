@@ -61,7 +61,9 @@ impl HardwareCollector {
         {
             cpu_state.topology = cpu::discover_windows_core_topology(8);
         }
-        let adapters = crate::hardware::dxgi::enumerate_dxgi_adapters();
+        let _ = collect_cpu_snapshot(&mut cpu_state, false);
+        let pdh_state = PdhTelemetryState::new();
+        let adapters = crate::hardware::dxgi::enumerate_all_adapters();
         let host_info = get_host_info(is_mock);
         Self {
             mode: CollectorMode::Live,
@@ -72,7 +74,7 @@ impl HardwareCollector {
             power_state: PowerCollectorState::default(),
             processes_state: ProcessesCollectorState::default(),
             adapters,
-            pdh_state: PdhTelemetryState::new(),
+            pdh_state,
             idle_baseline_w: 4.8,
             last_tick_instant: None,
         }
@@ -159,7 +161,7 @@ impl HardwareCollector {
             npu.shared_memory_used_mb,
             is_mock,
         );
-        let power_thermals = collect_power_thermal_snapshot(
+        let mut power_thermals = collect_power_thermal_snapshot(
             &mut self.power_state,
             self.pdh_state.as_ref(),
             self.idle_baseline_w,
@@ -169,6 +171,21 @@ impl HardwareCollector {
             collect_storage_snapshot(&mut self.storage_state, self.pdh_state.as_ref(), is_mock);
         let network = collect_network_snapshot(&mut self.network_state, is_mock);
         let timing = collect_timing_snapshot(is_mock);
+
+        if let Some(ref smart) = storage.smart_health {
+            if smart.composite_temp_c > 0.0 {
+                power_thermals.nvme_composite_c = Some(smart.composite_temp_c);
+            }
+            if smart.controller_temp_c.is_some() {
+                power_thermals.nvme_asic_c = smart.controller_temp_c;
+            }
+            if smart.nand_temp_c.is_some() {
+                power_thermals.nvme_nand_c = smart.nand_temp_c;
+            }
+        }
+        if gpu.temperature_c.is_some() {
+            power_thermals.gpu_c = gpu.temperature_c;
+        }
 
         let tracked_processes = if !tracked_patterns.is_empty() || is_mock {
             let procs = collect_tracked_processes(

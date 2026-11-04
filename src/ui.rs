@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use crate::snapshot::types::{
-    DiagnosticStatus, MutopSnapshot, NpuActivityStatus, PrivilegeTier, ProcessAffinityProfile,
+    DiagnosticStatus, EffectivePowerMode, MutopSnapshot, NpuActivityStatus, ProcessAffinityProfile,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,80 +42,41 @@ impl Default for UiState {
 pub fn render_ui(frame: &mut Frame, snapshot: &MutopSnapshot, ui_state: &UiState) {
     let size = frame.area();
 
+    // 5-Row Main Vertical Layout matching ventop-ai
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header: Host, SoC, Privilege, Timer Res, Power Mode, Status
-            Constraint::Length(8), // CPU Panel (Lion Cove P-cores 0..3 vs Skymont LP-E cores 4..7)
-            Constraint::Length(7), // Accelerators: Intel Arc 140V GPU + Intel AI Boost NPU 4
-            Constraint::Length(7), // Unified Memory (16GB MoP) + RAPL Power & Thermals
-            Constraint::Length(6), // Storage (NVMe Gen4 x4) + Network (2.5GbE, Wi-Fi 7, Loopback)
-            Constraint::Min(8),    // Interactive Process & Thread Placement Table
-            Constraint::Length(1), // Keybindings & Status Bar
+            Constraint::Length(3),  // Header
+            Constraint::Length(12), // Top Grid (CPU & Dual Accelerators)
+            Constraint::Length(6),  // Mid Grid (Memory/Storage & Power/Thermals/Net)
+            Constraint::Min(8),     // Process table
+            Constraint::Length(1),  // Footer status / key help
         ])
         .split(size);
 
-    render_header(frame, chunks[0], snapshot, ui_state);
-    render_cpu_panel(frame, chunks[1], snapshot);
-    render_accelerators_panel(frame, chunks[2], snapshot);
-    render_memory_power_panel(frame, chunks[3], snapshot);
-    render_storage_network_panel(frame, chunks[4], snapshot);
-    render_process_table(frame, chunks[5], snapshot, ui_state);
-    render_footer(frame, chunks[6], ui_state);
+    render_header(frame, chunks[0], snapshot);
+    render_top_grid(frame, chunks[1], snapshot);
+    render_mid_grid(frame, chunks[2], snapshot);
+    render_process_table(frame, chunks[3], snapshot, ui_state);
+    render_footer(frame, chunks[4]);
 }
 
-fn make_gauge(pct: f32, width: usize) -> (String, Color) {
-    let clamped = pct.clamp(0.0, 100.0);
-    let filled = ((clamped / 100.0) * width as f32).round() as usize;
-    let empty = width.saturating_sub(filled);
-    let bar = format!("[{}{}]", "|".repeat(filled), " ".repeat(empty));
-    let color = if clamped >= 85.0 {
-        Color::LightRed
-    } else if clamped >= 60.0 {
-        Color::Yellow
-    } else {
-        Color::LightGreen
-    };
-    (bar, color)
-}
-
-fn render_header(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot, ui_state: &UiState) {
-    let compact = area.width < 120;
+fn render_header(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
     let uptime = snapshot.timing.unbiased_uptime_sec as u64;
     let hours = uptime / 3600;
     let mins = (uptime % 3600) / 60;
     let secs = uptime % 60;
+    let compact = area.width < 122;
 
-    let tier_str = match snapshot.host.privilege_tier {
-        PrivilegeTier::Tier1Unprivileged => "Tier 1 (Unprivileged)",
-        PrivilegeTier::Tier2ElevatedAdmin => "Tier 2 (Admin)",
-        PrivilegeTier::Tier3SignedDriver => "Tier 3 (Driver)",
-    };
-    let tier_color = match snapshot.host.privilege_tier {
-        PrivilegeTier::Tier1Unprivileged => Color::Cyan,
-        PrivilegeTier::Tier2ElevatedAdmin => Color::LightGreen,
-        PrivilegeTier::Tier3SignedDriver => Color::Magenta,
+    let pwr_mode = match snapshot.power_thermals.effective_power_mode {
+        EffectivePowerMode::BestPerformance => "Performance",
+        EffectivePowerMode::BestPowerEfficiency => "Efficiency",
+        EffectivePowerMode::Balanced => "Balanced",
+        EffectivePowerMode::BatterySaver => "BatterySaver",
+        EffectivePowerMode::Unknown => "Unknown",
     };
 
-    let timer_res = snapshot.timing.timer_resolution.current_ms;
-    let timer_res_color = if timer_res <= 1.0 {
-        Color::LightGreen
-    } else {
-        Color::Yellow
-    };
-
-    let status_str = match snapshot.ai_diagnostics.status {
-        DiagnosticStatus::Healthy => "HEALTHY",
-        DiagnosticStatus::Degraded => "DEGRADED",
-        DiagnosticStatus::Critical => "CRITICAL",
-    };
-    let status_color = match snapshot.ai_diagnostics.status {
-        DiagnosticStatus::Healthy => Color::LightGreen,
-        DiagnosticStatus::Degraded => Color::Yellow,
-        DiagnosticStatus::Critical => Color::LightRed,
-    };
-
-    let mut line1 = vec![
+    let mut spans = vec![
         Span::styled(
             " MUTOP-AI ",
             Style::default()
@@ -125,662 +86,846 @@ fn render_header(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot, ui_sta
         ),
         Span::styled(
             if compact {
-                " LP Mu "
+                " LP Mu Ultra "
             } else {
-                " LattePanda Mu Ultra "
+                "  LattePanda Mu Ultra "
             },
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "[Intel Core Ultra 7 256V (Lunar Lake)] ",
+            if compact {
+                "[Core Ultra 7 256V]"
+            } else {
+                "[Intel Core Ultra 7 256V + Arc 140V + NPU 4]"
+            },
             Style::default().fg(Color::Yellow),
         ),
+        Span::raw(" | "),
         Span::styled(
-            format!("[{} AI TOPS] ", snapshot.host.total_ai_tops),
-            Style::default()
-                .fg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD),
+            format!("Uptime: {:02}:{:02}:{:02}", hours, mins, secs),
+            Style::default().fg(Color::Green),
         ),
-        Span::styled(format!("[{}] ", tier_str), Style::default().fg(tier_color)),
+        Span::raw(" | "),
+        Span::styled(
+            format!(
+                "Power: {:5.2}W ({})",
+                snapshot.power_thermals.package_w, pwr_mode
+            ),
+            Style::default().fg(Color::Cyan),
+        ),
     ];
 
-    if let Some(ref marker) = snapshot.marker {
-        line1.push(Span::styled(
-            format!("MARK: {} ", marker),
+    if area.width >= 102 {
+        spans.push(Span::raw(" | "));
+        spans.push(Span::styled(
+            if compact {
+                "115 TOPS AI"
+            } else {
+                "115 TOPS EDGE AI"
+            },
             Style::default()
-                .fg(Color::LightMagenta)
+                .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ));
     }
 
-    let line2 = vec![
-        Span::styled("Timer: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{:.3}ms ", timer_res),
-            Style::default().fg(timer_res_color),
-        ),
-        Span::styled("| Power Mode: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{:?} ", snapshot.power_thermals.effective_power_mode),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled("| Uptime: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{:02}:{:02}:{:02} ", hours, mins, secs),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled("| AI Health: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            status_str,
-            Style::default()
-                .fg(status_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-        if !snapshot.ai_diagnostics.bottlenecks.is_empty() {
-            Span::styled(
-                format!(" ({})", snapshot.ai_diagnostics.bottlenecks.join(", ")),
-                Style::default().fg(Color::LightRed),
-            )
-        } else {
-            Span::raw("")
-        },
-    ];
-
-    let paragraph = Paragraph::new(vec![Line::from(line1), Line::from(line2)]).block(
+    let header_text = vec![Line::from(spans)];
+    let header = Paragraph::new(header_text).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(if ui_state.filter_mode {
-                format!(
-                    " Filter Active: [{}] (Press Esc to finish) ",
-                    ui_state.process_filter
-                )
-            } else {
-                " System Overview ".to_string()
-            })
-            .style(Style::default().fg(Color::Cyan)),
+            .style(Style::default().fg(Color::DarkGray)),
     );
-    frame.render_widget(paragraph, area);
+    frame.render_widget(header, area);
+}
+
+fn render_top_grid(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
+    let top_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(42), // CPU & Clusters
+            Constraint::Percentage(58), // Dual Accelerators (NPU 4 + Arc 140V)
+        ])
+        .split(area);
+
+    render_cpu_panel(frame, top_cols[0], snapshot);
+    render_accelerators_panel(frame, top_cols[1], snapshot);
 }
 
 fn render_cpu_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+    let total_cpu = snapshot.cpu.total_load_pct;
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let compact = inner_width < 54;
+    let mut lines = Vec::new();
 
-    let gauge_w = 12;
+    // Total CPU bar matching ventop-ai (# and -)
+    let bar_width: usize = if inner_width < 44 { 16 } else { 20 };
+    let filled = ((total_cpu / 100.0) * bar_width as f32).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+    let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(empty));
 
-    // Left: Lion Cove P-cores 0..3
-    let mut p_lines = vec![Line::from(vec![
+    lines.push(Line::from(vec![
         Span::styled(
-            "Lion Cove P-cores (0..3) Total: ",
+            "Total CPU: ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{:5.1}%", snapshot.cpu.lion_cove_p_load_pct),
+            format!("{:5.1}% ", total_cpu),
+            Style::default().fg(if total_cpu > 80.0 {
+                Color::Red
+            } else {
+                Color::Green
+            }),
+        ),
+        Span::styled(bar, Style::default().fg(Color::Cyan)),
+    ]));
+
+    // Lion Cove P-core cluster (cores 0..4)
+    let p_load = snapshot.cpu.lion_cove_p_load_pct;
+    let p_cur_mhz = if !snapshot.cpu.per_core_current_mhz.is_empty() {
+        let sum: u32 = snapshot.cpu.per_core_current_mhz
+            [..4.min(snapshot.cpu.per_core_current_mhz.len())]
+            .iter()
+            .sum();
+        sum / 4
+    } else {
+        0
+    };
+    let p_max_mhz = snapshot
+        .cpu
+        .per_core_max_mhz
+        .first()
+        .copied()
+        .unwrap_or(2200);
+
+    let p_label = if inner_width < 42 {
+        "LionCove(P) : "
+    } else {
+        "LionCove (P) : "
+    };
+    let p_load_str = if compact {
+        format!("{:3.0}%", p_load)
+    } else {
+        format!("{:3.0}% load", p_load)
+    };
+    let p_freq_str = format!("{:4} MHz", p_cur_mhz);
+    let p_range_str = format!(" [max {} MHz, C0-C3]", p_max_mhz);
+
+    lines.push(Line::from(vec![
+        Span::styled(p_label, Style::default().fg(Color::LightYellow)),
+        Span::styled(
+            p_load_str,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" @ "),
+        Span::styled(
+            p_freq_str,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(p_range_str, Style::default().fg(Color::DarkGray)),
+    ]));
+
+    // Skymont LP-E core cluster (cores 4..8)
+    let e_load = snapshot.cpu.skymont_lpe_load_pct;
+    let e_cur_mhz = if snapshot.cpu.per_core_current_mhz.len() >= 8 {
+        let sum: u32 = snapshot.cpu.per_core_current_mhz[4..8].iter().sum();
+        sum / 4
+    } else {
+        0
+    };
+    let e_max_mhz = snapshot
+        .cpu
+        .per_core_max_mhz
+        .get(4)
+        .copied()
+        .unwrap_or(2200);
+
+    let e_label = if inner_width < 42 {
+        "Skymont(LPE): "
+    } else {
+        "Skymont (LPE): "
+    };
+    let e_load_str = if compact {
+        format!("{:3.0}%", e_load)
+    } else {
+        format!("{:3.0}% load", e_load)
+    };
+    let e_freq_str = format!("{:4} MHz", e_cur_mhz);
+    let e_range_str = format!(" [max {} MHz, C4-C7]", e_max_mhz);
+
+    lines.push(Line::from(vec![
+        Span::styled(e_label, Style::default().fg(Color::LightGreen)),
+        Span::styled(
+            e_load_str,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" @ "),
+        Span::styled(
+            e_freq_str,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(e_range_str, Style::default().fg(Color::DarkGray)),
+    ]));
+
+    // Conserved & timer resolution line
+    lines.push(Line::from(vec![
+        Span::styled("Tick: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(
+                "U:{:3.0}% S:{:3.0}% Idl:{:3.0}%",
+                snapshot.cpu.user_pct, snapshot.cpu.system_pct, snapshot.cpu.idle_pct
+            ),
             Style::default().fg(Color::White),
         ),
-        if snapshot.cpu.is_throttled {
-            Span::styled(
-                " [THROTTLED]",
-                Style::default()
-                    .fg(Color::LightRed)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::raw("")
-        },
-    ])];
+        Span::styled(" | Timer: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{:5.2}ms", snapshot.timing.timer_resolution.current_ms),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]));
 
+    // Divider
+    lines.push(Line::from(Span::styled(
+        "─".repeat(inner_width.max(10)),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Per-core load % grouped by cluster
+    let mut p_spans = vec![Span::styled(
+        if inner_width < 45 {
+            "P-Cores (0-3): "
+        } else {
+            "LionCove (C0-C3): "
+        },
+        Style::default().fg(Color::LightYellow),
+    )];
     for i in 0..4 {
-        let pct = snapshot.cpu.per_core_pct.get(i).copied().unwrap_or(0.0);
+        let u = snapshot.cpu.per_core_pct.get(i).copied().unwrap_or(0.0);
+        let col = if u > 80.0 {
+            Color::Red
+        } else if u > 50.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        p_spans.push(Span::styled(
+            format!("C{}:{:3.0}% ", i, u),
+            Style::default().fg(col),
+        ));
+    }
+    lines.push(Line::from(p_spans));
+
+    let mut e_spans = vec![Span::styled(
+        if inner_width < 45 {
+            "LP-E    (4-7): "
+        } else {
+            "Skymont  (C4-C7): "
+        },
+        Style::default().fg(Color::LightGreen),
+    )];
+    for i in 4..8 {
+        let u = snapshot.cpu.per_core_pct.get(i).copied().unwrap_or(0.0);
+        let col = if u > 80.0 {
+            Color::Red
+        } else if u > 50.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        e_spans.push(Span::styled(
+            format!("C{}:{:3.0}% ", i, u),
+            Style::default().fg(col),
+        ));
+    }
+    lines.push(Line::from(e_spans));
+
+    // Per-core frequency (MHz)
+    let mut p_freq_spans = vec![Span::styled(
+        "P-Freq (MHz)    : ",
+        Style::default().fg(Color::DarkGray),
+    )];
+    for i in 0..4 {
         let mhz = snapshot
             .cpu
             .per_core_current_mhz
             .get(i)
             .copied()
             .unwrap_or(0);
-        let max_mhz = snapshot.cpu.per_core_max_mhz.get(i).copied().unwrap_or(0);
-        let (gauge, g_col) = make_gauge(pct, gauge_w);
-
-        p_lines.push(Line::from(vec![
-            Span::styled(
-                format!("  P{} ", i),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("{:5.1}% ", pct), Style::default().fg(Color::White)),
-            Span::styled(gauge, Style::default().fg(g_col)),
-            Span::styled(
-                format!(" {:4} / {:4} MHz", mhz, max_mhz),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+        p_freq_spans.push(Span::styled(
+            format!("C{}:{:4} ", i, mhz),
+            Style::default().fg(Color::White),
+        ));
     }
+    lines.push(Line::from(p_freq_spans));
 
-    let p_block = Paragraph::new(p_lines).block(
+    let mut e_freq_spans = vec![Span::styled(
+        "E-Freq (MHz)    : ",
+        Style::default().fg(Color::DarkGray),
+    )];
+    for i in 4..8 {
+        let mhz = snapshot
+            .cpu
+            .per_core_current_mhz
+            .get(i)
+            .copied()
+            .unwrap_or(0);
+        e_freq_spans.push(Span::styled(
+            format!("C{}:{:4} ", i, mhz),
+            Style::default().fg(Color::White),
+        ));
+    }
+    lines.push(Line::from(e_freq_spans));
+
+    let cpu_block = Paragraph::new(lines).block(
         Block::default()
-            .title(" Lion Cove P-Cluster (Performance) ")
+            .title(" CPU Subsystem (8 Cores) ")
             .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Yellow)),
+            .style(Style::default().fg(Color::Cyan)),
     );
-    frame.render_widget(p_block, cols[0]);
+    frame.render_widget(cpu_block, area);
+}
 
-    // Right: Skymont LP-E cores 4..7
-    let mut e_lines = vec![Line::from(vec![
+fn render_accelerators_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let mut lines = Vec::new();
+
+    // 1. THE AI NPU Header matching ventop-ai (◆ THE AI BRAIN:)
+    let (npu_act_str, npu_act_col) = match snapshot.npu.activity_status {
+        NpuActivityStatus::ActivePromptProcessing => ("Prompt (PP)", Color::LightYellow),
+        NpuActivityStatus::ActiveTokenGeneration => ("Gen (TG)", Color::LightGreen),
+        NpuActivityStatus::ActiveCompute => ("Active Compute", Color::LightGreen),
+        NpuActivityStatus::Idle => ("Idle", Color::DarkGray),
+    };
+
+    lines.push(Line::from(vec![
         Span::styled(
-            "Skymont LP-E cores (4..7) Total: ",
+            "◆ THE AI NPU: ",
             Style::default()
-                .fg(Color::LightGreen)
+                .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("{:5.1}%", snapshot.cpu.skymont_lpe_load_pct),
+            format!("{} ({} TOPS)", snapshot.npu.name, snapshot.npu.npu_tops),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" | "),
+        Span::styled("MCDM", Style::default().fg(Color::Cyan)),
+        Span::raw(" ["),
+        Span::styled(
+            npu_act_str,
+            Style::default()
+                .fg(npu_act_col)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("]"),
+    ]));
+
+    // NPU Utilization Bar & Shared Memory
+    let npu_bar_w: usize = if inner_width < 50 { 10 } else { 16 };
+    let npu_filled = ((snapshot.npu.utilization_pct / 100.0) * npu_bar_w as f32).round() as usize;
+    let npu_empty = npu_bar_w.saturating_sub(npu_filled);
+    let npu_bar = format!("[{}{}]", "#".repeat(npu_filled), "-".repeat(npu_empty));
+
+    lines.push(Line::from(vec![
+        Span::styled("  Util    : ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{:5.1}% ", snapshot.npu.utilization_pct),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(npu_bar, Style::default().fg(Color::Magenta)),
+        Span::styled(
+            if snapshot.npu.current_freq_mhz == 0 {
+                " | Freq: Auto MHz".to_string()
+            } else {
+                format!(" | Freq: {:4} MHz", snapshot.npu.current_freq_mhz)
+            },
             Style::default().fg(Color::White),
         ),
         Span::styled(
             format!(
-                " | Conserved: U:{:.0}% S:{:.0}% Idl:{:.0}%",
-                snapshot.cpu.user_pct, snapshot.cpu.system_pct, snapshot.cpu.idle_pct
+                " | Shared: {:4} / {:4} MB",
+                snapshot.npu.shared_memory_used_mb, snapshot.npu.shared_memory_budget_mb
             ),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::LightMagenta),
         ),
-    ])];
+    ]));
 
-    for i in 4..8 {
-        let pct = snapshot.cpu.per_core_pct.get(i).copied().unwrap_or(0.0);
-        let mhz = snapshot
-            .cpu
-            .per_core_current_mhz
-            .get(i)
-            .copied()
-            .unwrap_or(0);
-        let max_mhz = snapshot.cpu.per_core_max_mhz.get(i).copied().unwrap_or(0);
-        let (gauge, g_col) = make_gauge(pct, gauge_w);
-
-        e_lines.push(Line::from(vec![
+    // llama-server /slots or AI Offload status
+    if let Some(ref slots) = snapshot.npu.slots_metrics {
+        lines.push(Line::from(vec![
+            Span::styled("  llama   : ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("  E{} ", i),
+                format!("⚡ {:.1} tok/s", slots.generation_tokens_per_sec),
                 Style::default()
                     .fg(Color::LightGreen)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{:5.1}% ", pct), Style::default().fg(Color::White)),
-            Span::styled(gauge, Style::default().fg(g_col)),
             Span::styled(
-                format!(" {:4} / {:4} MHz", mhz, max_mhz),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-    }
-
-    let e_block = Paragraph::new(e_lines).block(
-        Block::default()
-            .title(" Skymont LP-E Cluster (Low-Power Efficiency) ")
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::LightGreen)),
-    );
-    frame.render_widget(e_block, cols[1]);
-}
-
-fn render_accelerators_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    let gauge_w = 14;
-
-    // Left: Intel Arc 140V GPU (64 TOPS)
-    let (gpu_gauge, gpu_col) = make_gauge(snapshot.gpu.total_utilization_pct, gauge_w);
-    let gpu_lines = vec![
-        Line::from(vec![
-            Span::styled("Util: ", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                format!("{:5.1}% ", snapshot.gpu.total_utilization_pct),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(gpu_gauge, Style::default().fg(gpu_col)),
-            Span::styled(
-                format!(" | Clock: {} MHz", snapshot.gpu.clock_mhz),
-                Style::default().fg(Color::White),
+                format!(" | Prefill: {:.0} T/s", slots.prompt_tokens_per_sec),
+                Style::default().fg(Color::LightYellow),
             ),
             Span::styled(
-                format!(
-                    " | Temp: {}",
-                    snapshot
-                        .gpu
-                        .temperature_c
-                        .map(|t| format!("{:.0}°C", t))
-                        .unwrap_or_else(|| "-".to_string())
-                ),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Engines: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("3D: {:.1}% ", snapshot.gpu.render_3d_pct),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                format!("Compute: {:.1}% ", snapshot.gpu.compute_pct),
+                format!(" | Slots: {}/{}", slots.active_slots, slots.total_slots),
                 Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!("Copy: {:.1}% ", snapshot.gpu.copy_pct),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                format!("Decode: {:.1}%", snapshot.gpu.video_decode_pct),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Shared RAM: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} / {} MB",
-                    snapshot.gpu.shared_memory_used_mb, snapshot.gpu.shared_memory_budget_mb
-                ),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(" | Power: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                snapshot
-                    .gpu
-                    .power_w
-                    .map(|p| format!("{:.1} W", p))
-                    .unwrap_or_else(|| "-".to_string()),
-                Style::default().fg(Color::LightRed),
-            ),
-            Span::styled(
-                if snapshot.gpu.throttling.power_limited {
-                    " [PWR LIMIT]"
-                } else {
-                    ""
-                },
-                Style::default().fg(Color::LightRed),
-            ),
-        ]),
-    ];
-
-    let gpu_block = Paragraph::new(gpu_lines).block(
-        Block::default()
-            .title(format!(" {} (64 TOPS, 8 Xe2-LPG) ", snapshot.gpu.name))
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Cyan)),
-    );
-    frame.render_widget(gpu_block, cols[0]);
-
-    // Right: Intel AI Boost NPU 4 (47 TOPS)
-    let (npu_gauge, npu_col) = make_gauge(snapshot.npu.utilization_pct, gauge_w);
-    let mut npu_lines = vec![
-        Line::from(vec![
-            Span::styled("Util: ", Style::default().fg(Color::Magenta)),
-            Span::styled(
-                format!("{:5.1}% ", snapshot.npu.utilization_pct),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(npu_gauge, Style::default().fg(npu_col)),
-            Span::styled(
-                format!(" | Freq: {} MHz", snapshot.npu.current_freq_mhz),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                format!(" | Status: {:?}", snapshot.npu.activity_status),
-                Style::default().fg(match snapshot.npu.activity_status {
-                    NpuActivityStatus::Idle => Color::DarkGray,
-                    _ => Color::LightGreen,
-                }),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Shared RAM: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} / {} MB",
-                    snapshot.npu.shared_memory_used_mb, snapshot.npu.shared_memory_budget_mb
-                ),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(" | Hardware: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                "47 TOPS MCDM Compute Adapter",
-                Style::default().fg(Color::Magenta),
-            ),
-        ]),
-    ];
-
-    if let Some(ref slots) = snapshot.npu.slots_metrics {
-        npu_lines.push(Line::from(vec![
-            Span::styled(
-                "llama-server: ",
-                Style::default()
-                    .fg(Color::LightMagenta)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("Prefill: {:.1} T/s | ", slots.prompt_tokens_per_sec),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                format!("Decode: {:.1} T/s | ", slots.generation_tokens_per_sec),
-                Style::default().fg(Color::LightGreen),
-            ),
-            Span::styled(
-                format!("Slots: {} / {}", slots.active_slots, slots.total_slots),
-                Style::default().fg(Color::DarkGray),
             ),
         ]));
     } else {
-        npu_lines.push(Line::from(vec![
-            Span::styled("llama-server: ", Style::default().fg(Color::DarkGray)),
+        lines.push(Line::from(vec![
+            Span::styled("  llama   : ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 if snapshot.network.loopback.llama_server_listening {
-                    "Listening on :8080 (Slots Idle)"
+                    ":8080 listening | Slots Idle | Zero-Copy FastRPC/MCDM"
                 } else {
-                    "Offline (no /slots)"
+                    "Offline (no /slots on :8080) | MCDM compute queue ready"
                 },
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(if snapshot.network.loopback.llama_server_listening {
+                    Color::Cyan
+                } else {
+                    Color::DarkGray
+                }),
             ),
         ]));
     }
 
-    let npu_block = Paragraph::new(npu_lines).block(
+    // Divider
+    lines.push(Line::from(Span::styled(
+        "─".repeat(inner_width.max(10)),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // 2. THE AI GPU Header matching ventop-ai (◆ THE ACTION BRAIN:)
+    let gpu_freq_str = if snapshot.gpu.clock_mhz > 0 {
+        format!("{:4} MHz", snapshot.gpu.clock_mhz)
+    } else {
+        "Auto MHz".to_string()
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "◆ THE AI GPU: ",
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "{} ({} TOPS, 8 Xe2-LPG)",
+                snapshot.gpu.name, snapshot.gpu.gpu_tops
+            ),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" | "),
+        Span::styled(gpu_freq_str, Style::default().fg(Color::White)),
+        Span::styled(
+            format!(" | Busy: {:5.1}%", snapshot.gpu.total_utilization_pct),
+            Style::default().fg(Color::Cyan),
+        ),
+    ]));
+
+    // GPU Engines
+    lines.push(Line::from(vec![
+        Span::styled("  Engines : ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("3D:{:5.1}% ", snapshot.gpu.render_3d_pct),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(
+            format!("| Compute:{:5.1}% ", snapshot.gpu.compute_pct),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(
+            format!("| Copy:{:5.1}% ", snapshot.gpu.copy_pct),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("| Decode:{:5.1}%", snapshot.gpu.video_decode_pct),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+
+    // GPU Shared VRAM & Power & Thermals
+    let temp_str = snapshot
+        .gpu
+        .temperature_c
+        .map(|t| format!("{:.0}°C", t))
+        .unwrap_or_else(|| "-".to_string());
+    let pwr_str = snapshot
+        .gpu
+        .power_w
+        .map(|p| format!("{:.1}W", p))
+        .unwrap_or_else(|| "-".to_string());
+
+    lines.push(Line::from(vec![
+        Span::styled("  VRAM    : ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(
+                "{:4} / {:4} MB",
+                snapshot.gpu.shared_memory_used_mb, snapshot.gpu.shared_memory_budget_mb
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" | Power: {}", pwr_str),
+            Style::default().fg(Color::LightRed),
+        ),
+        Span::styled(
+            format!(" | Temp: {}", temp_str),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            if snapshot.gpu.throttling.power_limited {
+                " | PWR-LIMIT"
+            } else {
+                " | Throt: None"
+            },
+            Style::default().fg(if snapshot.gpu.throttling.power_limited {
+                Color::Red
+            } else {
+                Color::DarkGray
+            }),
+        ),
+    ]));
+
+    // Active workloads
+    lines.push(Line::from(vec![
+        Span::styled("  Workload: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "DirectML / OpenVINO / Vulkan / SYCL Compute Queue",
+            Style::default().fg(Color::Cyan),
+        ),
+    ]));
+
+    let accelerators_block = Paragraph::new(lines).block(
         Block::default()
-            .title(format!(" {} (47 TOPS, NPU 4) ", snapshot.npu.name))
+            .title(" Dual-Accelerator Telemetry (NPU 4 + Arc 140V) ")
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::Magenta)),
     );
-    frame.render_widget(npu_block, cols[1]);
+    frame.render_widget(accelerators_block, area);
 }
 
-fn render_memory_power_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
+fn render_mid_grid(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(50), // Memory & Storage
+            Constraint::Percentage(50), // Power, Thermals & Network
+        ])
         .split(area);
 
-    let mop_mb = snapshot.memory.installed_mop_mb;
-    let in_use_mb = snapshot.memory.in_use_phys_mb;
-    let mem_pct = (in_use_mb as f32 / mop_mb as f32) * 100.0;
-    let (mem_gauge, mem_col) = make_gauge(mem_pct, 14);
+    render_memory_storage_panel(frame, cols[0], snapshot);
+    render_power_thermals_network_panel(frame, cols[1], snapshot);
+}
+
+fn render_memory_storage_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
+    let total_ram_gb = snapshot.memory.installed_mop_mb as f64 / 1024.0;
+    let used_ram_gb = snapshot.memory.in_use_phys_mb as f64 / 1024.0;
+    let avail_ram_gb = snapshot.memory.os_avail_phys_mb as f64 / 1024.0;
+    let ram_pct = (used_ram_gb / total_ram_gb.max(0.1)) * 100.0;
+
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let bar_width: usize = if inner_width < 52 { 10 } else { 16 };
+    let filled = ((ram_pct / 100.0) * bar_width as f64).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+    let bar = format!("[{}{}]", "#".repeat(filled), "-".repeat(empty));
+
+    let ram_val_str = format!(
+        "{:5.2} / {:5.2} GB ({:4.1}%) ",
+        used_ram_gb, total_ram_gb, ram_pct
+    );
 
     let mem_lines = vec![
         Line::from(vec![
-            Span::styled("In-Use: ", Style::default().fg(Color::Cyan)),
             Span::styled(
-                format!("{} / {} MB ({:.1}%) ", in_use_mb, mop_mb, mem_pct),
-                Style::default().fg(Color::White),
+                "LPDDR5X RAM: ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(mem_gauge, Style::default().fg(mem_col)),
+            Span::styled(ram_val_str, Style::default().fg(Color::White)),
+            Span::styled(bar, Style::default().fg(Color::Green)),
         ]),
         Line::from(vec![
-            Span::styled("Reconciled: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Available  : ", Style::default().fg(Color::LightGreen)),
             Span::styled(
-                format!("CPU: {} MB | ", snapshot.memory.pure_cpu_in_use_mb),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                format!("Arc Shared: {} MB | ", snapshot.memory.arc_gpu_shared_mb),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!("NPU Shared: {} MB", snapshot.memory.npu_shared_mb),
-                Style::default().fg(Color::Magenta),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Aperture / Commit: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("BIOS: {} MB | ", snapshot.memory.bios_stolen_aperture_mb),
-                Style::default().fg(Color::DarkGray),
+                format!("{:5.2} GB", avail_ram_gb),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(
-                    "Commit: {} / {} MB",
-                    snapshot.memory.commit_total_mb, snapshot.memory.commit_limit_mb
+                    " | CPU: {:4}MB | Arc: {:4}MB | NPU: {:4}MB",
+                    snapshot.memory.pure_cpu_in_use_mb,
+                    snapshot.memory.arc_gpu_shared_mb,
+                    snapshot.memory.npu_shared_mb
+                ),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Mem Xfer   : ", Style::default().fg(Color::LightCyan)),
+            Span::styled(
+                format!(
+                    "Commit: {:5}/{:5}MB | BIOS Aperture: {:3}MB",
+                    snapshot.memory.commit_total_mb,
+                    snapshot.memory.commit_limit_mb,
+                    snapshot.memory.bios_stolen_aperture_mb
                 ),
                 Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("NVMe Disk  : ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                {
+                    let pcie_tag =
+                        if snapshot.storage.current_gen > 0 && snapshot.storage.current_lanes > 0 {
+                            format!(
+                                "[Gen{}x{}] ",
+                                snapshot.storage.current_gen, snapshot.storage.current_lanes
+                            )
+                        } else {
+                            String::new()
+                        };
+                    format!(
+                        "C:\\ {:.1}/{:.1}GB ({:.0}%) {}{}",
+                        snapshot.storage.capacity_gb - snapshot.storage.free_gb,
+                        snapshot.storage.capacity_gb,
+                        snapshot.storage.used_pct,
+                        pcie_tag,
+                        if snapshot.storage.is_link_degraded {
+                            "(Degraded) "
+                        } else {
+                            ""
+                        }
+                    )
+                },
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                format!(
+                    "| R:{:4.1} W:{:4.1}MB/s (Util:{:2.0}%)",
+                    snapshot.storage.read_mb_s,
+                    snapshot.storage.write_mb_s,
+                    snapshot.storage.busy_pct
+                ),
+                Style::default().fg(Color::DarkGray),
             ),
         ]),
     ];
 
     let mem_block = Paragraph::new(mem_lines).block(
         Block::default()
-            .title(" Unified Memory (16 GB LPDDR5X-8533 MoP) ")
+            .title(" Memory, Transfers & Built-in Storage ")
             .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Cyan)),
+            .style(Style::default().fg(Color::Green)),
     );
-    frame.render_widget(mem_block, cols[0]);
+    frame.render_widget(mem_block, area);
+}
 
-    // Right: RAPL Power & Thermals
-    let p_pkg = snapshot.power_thermals.package_w;
-    let p_above = snapshot.power_thermals.power_above_idle_w;
-    let p_base = snapshot.power_thermals.idle_baseline_w;
+fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
+    let mut lines = Vec::new();
 
-    let pwr_lines = vec![
-        Line::from(vec![
-            Span::styled(
-                "Package (PKG): ",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+    // Package power & rails
+    lines.push(Line::from(vec![
+        Span::styled(
+            "Package Pwr: ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:5.2} W ", snapshot.power_thermals.package_w),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "[PP0:{:5.2}W PP1:{:5.2}W DRAM:{:5.2}W] | Base: {:4.1}W",
+                snapshot.power_thermals.core_pp0_w,
+                snapshot.power_thermals.gpu_pp1_w,
+                snapshot.power_thermals.dram_w,
+                snapshot.power_thermals.idle_baseline_w
             ),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+
+    // Thermals & fan & AI health
+    let acpi_t = snapshot
+        .power_thermals
+        .acpi_thermal_zone_c
+        .map(|t| format!("{:.0}°C", t))
+        .unwrap_or_else(|| "-".to_string());
+    let gpu_t = snapshot
+        .power_thermals
+        .gpu_c
+        .map(|t| format!("{:.0}°C", t))
+        .unwrap_or_else(|| "-".to_string());
+    let nvme_t = snapshot
+        .power_thermals
+        .nvme_composite_c
+        .map(|t| format!("{:.0}°C", t))
+        .unwrap_or_else(|| "-".to_string());
+    let fan_rpm = snapshot
+        .power_thermals
+        .cpu_fan_rpm
+        .map(|r| format!("{} RPM", r))
+        .unwrap_or_else(|| "-".to_string());
+
+    let (ai_status_str, ai_status_col) = match snapshot.ai_diagnostics.status {
+        DiagnosticStatus::Healthy => ("HEALTHY", Color::LightGreen),
+        DiagnosticStatus::Degraded => ("DEGRADED", Color::Yellow),
+        DiagnosticStatus::Critical => ("CRITICAL", Color::LightRed),
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled("Thermals   : ", Style::default().fg(Color::LightRed)),
+        Span::styled(
+            format!("ACPI:{} GPU:{} NVMe:{} ", acpi_t, gpu_t, nvme_t),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(
+            format!("| Fan: {} ", fan_rpm),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled("| AI: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            ai_status_str,
+            Style::default()
+                .fg(ai_status_col)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // Ethernet (find first non-virtual physical adapter)
+    let eth_iface = snapshot
+        .network
+        .interfaces
+        .iter()
+        .find(|i| i.name.contains("Ethernet") || i.name.contains("I226"));
+    if let Some(eth) = eth_iface {
+        let mut eth_clean = eth.name.as_str();
+        if let Some(idx) = eth_clean.find("-WFP") {
+            eth_clean = &eth_clean[..idx];
+        }
+        if let Some(idx) = eth_clean.find("-QoS") {
+            eth_clean = &eth_clean[..idx];
+        }
+        if let Some(idx) = eth_clean.find("-Native") {
+            eth_clean = &eth_clean[..idx];
+        }
+        for prefix in &[
+            "Intel(R) Ethernet Controller ",
+            "Intel(R) Ethernet Connection ",
+            "Intel(R) Gigabit Network Connection ",
+            "Intel(R) ",
+            "Realtek PCIe GbE Family Controller",
+            "Realtek PCIe 2.5GbE Family Controller",
+            "Realtek PCIe ",
+            "Realtek ",
+        ] {
+            if let Some(stripped) = eth_clean.strip_prefix(prefix) {
+                eth_clean = stripped;
+                break;
+            }
+        }
+        let eth_clean = eth_clean.trim();
+        let eth_display = if eth_clean.len() > 20 {
+            &eth_clean[..20]
+        } else {
+            eth_clean
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled("Ethernet   : ", Style::default().fg(Color::LightBlue)),
             Span::styled(
-                format!("{:.2} W ", p_pkg),
+                format!(
+                    "{} ({} {}Mbps) ",
+                    eth_display,
+                    eth.oper_status.to_lowercase(),
+                    eth.link_speed_mbps
+                ),
                 Style::default().fg(Color::White),
             ),
             Span::styled(
-                format!("(Above idle: +{:.2} W, Baseline: {:.1} W)", p_above, p_base),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Rails: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("PP0 (CPU): {:.2} W | ", snapshot.power_thermals.core_pp0_w),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                format!("PP1 (GPU): {:.2} W | ", snapshot.power_thermals.gpu_pp1_w),
+                format!(
+                    "| RX:{:5.2}MB/s TX:{:5.2}MB/s",
+                    eth.rx_mbps / 8.0,
+                    eth.tx_mbps / 8.0
+                ),
                 Style::default().fg(Color::Cyan),
             ),
-            Span::styled(
-                format!("DRAM: {:.2} W", snapshot.power_thermals.dram_w),
-                Style::default().fg(Color::Magenta),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Thermals: ", Style::default().fg(Color::DarkGray)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Ethernet   : ", Style::default().fg(Color::LightBlue)),
+            Span::styled("None", Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    // WLAN / Wi-Fi 7 BE200
+    if let Some(ref wifi) = snapshot.network.wifi7 {
+        let mlo_str = if wifi.is_mlo { "MLO" } else { "Single" };
+        let wifi_iface = snapshot.network.interfaces.iter().find(|i| {
+            i.name.contains("Wi-Fi")
+                || i.name.contains("Wireless")
+                || i.name.contains("BE20")
+                || i.name.contains("WLAN")
+        });
+        let (wifi_rx_mbs, wifi_tx_mbs) = if let Some(iface) = wifi_iface {
+            (iface.rx_mbps / 8.0, iface.tx_mbps / 8.0)
+        } else {
+            (0.0, 0.0)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled("WLAN       : ", Style::default().fg(Color::LightGreen)),
             Span::styled(
                 format!(
-                    "ACPI: {} | ",
-                    snapshot
-                        .power_thermals
-                        .acpi_thermal_zone_c
-                        .map(|t| format!("{:.0}°C", t))
-                        .unwrap_or_else(|| "-".to_string())
+                    "Wi-Fi 7 (up {:3}dBm Q:{:2}% {:4}Mbps {}) ",
+                    wifi.rssi_dbm, wifi.signal_quality_pct, wifi.rx_rate_mbps, mlo_str
                 ),
                 Style::default().fg(Color::White),
             ),
             Span::styled(
-                format!(
-                    "GPU: {} | ",
-                    snapshot
-                        .power_thermals
-                        .gpu_c
-                        .map(|t| format!("{:.0}°C", t))
-                        .unwrap_or_else(|| "-".to_string())
-                ),
+                format!("| RX:{:5.2}MB/s TX:{:5.2}MB/s", wifi_rx_mbs, wifi_tx_mbs),
                 Style::default().fg(Color::Cyan),
             ),
-            Span::styled(
-                format!(
-                    "NVMe: {} | ",
-                    snapshot
-                        .power_thermals
-                        .nvme_composite_c
-                        .map(|t| format!("{:.0}°C", t))
-                        .unwrap_or_else(|| "-".to_string())
-                ),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::styled(
-                format!(
-                    "Fan: {}",
-                    snapshot
-                        .power_thermals
-                        .cpu_fan_rpm
-                        .map(|r| format!("{} RPM", r))
-                        .unwrap_or_else(|| "-".to_string())
-                ),
-                Style::default().fg(Color::LightGreen),
-            ),
-        ]),
-    ];
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("WLAN       : ", Style::default().fg(Color::LightGreen)),
+            Span::styled("None", Style::default().fg(Color::DarkGray)),
+        ]));
+    }
 
-    let pwr_block = Paragraph::new(pwr_lines).block(
+    let pwr_block = Paragraph::new(lines).block(
         Block::default()
-            .title(" RAPL Power Rails & Thermals ")
+            .title(" Power, Thermals & Network (ETH / Wi-Fi) ")
             .borders(Borders::ALL)
             .style(Style::default().fg(Color::Yellow)),
     );
-    frame.render_widget(pwr_block, cols[1]);
-}
-
-fn render_storage_network_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
-    let storage_lines = vec![
-        Line::from(vec![
-            Span::styled(
-                format!(
-                    "Link: PCIe Gen{} x{} ",
-                    snapshot.storage.current_gen, snapshot.storage.current_lanes
-                ),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            if snapshot.storage.is_link_degraded {
-                Span::styled(
-                    "[LINK DEGRADED] ",
-                    Style::default()
-                        .fg(Color::LightRed)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled("[Normal] ", Style::default().fg(Color::LightGreen))
-            },
-            Span::styled(
-                format!(
-                    "Capacity: {:.0} / {:.0} GB ({:.1}%)",
-                    snapshot.storage.capacity_gb - snapshot.storage.free_gb,
-                    snapshot.storage.capacity_gb,
-                    snapshot.storage.used_pct
-                ),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!(
-                    "Read: {:.1} MB/s ({:.0} IOPS) | ",
-                    snapshot.storage.read_mb_s, snapshot.storage.read_iops
-                ),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                format!(
-                    "Write: {:.1} MB/s ({:.0} IOPS) | ",
-                    snapshot.storage.write_mb_s, snapshot.storage.write_iops
-                ),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                format!("Busy: {:.1}%", snapshot.storage.busy_pct),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]),
-    ];
-
-    let storage_block = Paragraph::new(storage_lines).block(
-        Block::default()
-            .title(" NVMe Storage (M.2 PCIe Gen4 x4) ")
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::LightGreen)),
-    );
-    frame.render_widget(storage_block, cols[0]);
-
-    // Right: Network & AI Loopback Sockets
-    let wifi_str = if let Some(ref wifi) = snapshot.network.wifi7 {
-        format!(
-            "({} dBm, {}, MLO: {})",
-            wifi.rssi_dbm, wifi.phy_type, wifi.is_mlo
-        )
-    } else {
-        "None".to_string()
-    };
-
-    let total_rx_mbps: f64 = snapshot.network.interfaces.iter().map(|i| i.rx_mbps).sum();
-    let total_tx_mbps: f64 = snapshot.network.interfaces.iter().map(|i| i.tx_mbps).sum();
-
-    let net_lines = vec![
-        Line::from(vec![Span::styled(
-            format!(
-                "Throughput: Rx: {:.2} Mbps | Tx: {:.2} Mbps",
-                total_rx_mbps, total_tx_mbps
-            ),
-            Style::default().fg(Color::White),
-        )]),
-        Line::from(vec![
-            Span::styled("Wi-Fi 7: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(wifi_str, Style::default().fg(Color::LightGreen)),
-            Span::styled(" | Loopback: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                if snapshot.network.loopback.llama_server_listening {
-                    "llama:8080 UP "
-                } else {
-                    "llama:8080 DOWN "
-                },
-                Style::default().fg(if snapshot.network.loopback.llama_server_listening {
-                    Color::LightGreen
-                } else {
-                    Color::DarkGray
-                }),
-            ),
-            Span::styled(
-                if snapshot.network.loopback.mcp_gateway_listening {
-                    "MCP Gateway:UP"
-                } else {
-                    "MCP Gateway:DOWN"
-                },
-                Style::default().fg(if snapshot.network.loopback.mcp_gateway_listening {
-                    Color::LightGreen
-                } else {
-                    Color::DarkGray
-                }),
-            ),
-        ]),
-    ];
-
-    let net_block = Paragraph::new(net_lines).block(
-        Block::default()
-            .title(" Network (2.5GbE / Wi-Fi 7 BE201) & AI Loopback ")
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::LightGreen)),
-    );
-    frame.render_widget(net_block, cols[1]);
+    frame.render_widget(pwr_block, area);
 }
 
 fn render_process_table(
@@ -790,16 +935,8 @@ fn render_process_table(
     ui_state: &UiState,
 ) {
     let header_cells = [
-        "PID",
-        "Name",
-        "CPU %",
-        "P-Core %",
-        "LP-E %",
-        "RAM (MB)",
-        "GPU (MB)",
-        "NPU (MB)",
-        "Threads (P/E)",
-        "EcoQoS",
+        "PID", "Name", "CPU %", "P-Core %", "LP-E %", "WS (MB)", "GPU (MB)", "NPU (MB)", "Core",
+        "Th", "EcoQoS",
     ]
     .iter()
     .map(|h| {
@@ -810,10 +947,23 @@ fn render_process_table(
                 .add_modifier(Modifier::BOLD),
         )
     });
-    let header = Row::new(header_cells).height(1);
+    let header = Row::new(header_cells).height(1).bottom_margin(0);
 
     let empty_vec = Vec::new();
     let procs = snapshot.tracked_processes.as_ref().unwrap_or(&empty_vec);
+
+    let matching_count = procs
+        .iter()
+        .filter(|p| {
+            if ui_state.process_filter.is_empty() {
+                true
+            } else {
+                p.name
+                    .to_lowercase()
+                    .contains(&ui_state.process_filter.to_lowercase())
+            }
+        })
+        .count();
 
     let mut filtered_procs: Vec<&ProcessAffinityProfile> = procs
         .iter()
@@ -845,13 +995,28 @@ fn render_process_table(
         .iter()
         .skip(ui_state.scroll_offset)
         .map(|p| {
-            let is_ai = p.name.contains("llama") || p.name.contains("device-commander");
+            let is_ai = p.name.contains("llama")
+                || p.name.contains("device-commander")
+                || p.name.contains("mutop")
+                || p.name.contains("python");
             let name_style = if is_ai {
                 Style::default()
-                    .fg(Color::LightMagenta)
+                    .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
+            };
+
+            let primary_core = p.threads.first().map(|t| t.cpu_core).unwrap_or(0);
+            let core_label = if primary_core < 4 {
+                format!("C{} (Lion)", primary_core)
+            } else {
+                format!("C{} (Skym)", primary_core)
+            };
+            let core_color = if primary_core < 4 {
+                Color::Yellow
+            } else {
+                Color::DarkGray
             };
 
             Row::new(vec![
@@ -860,7 +1025,7 @@ fn render_process_table(
                 Span::styled(
                     format!("{:5.1}", p.cpu_pct),
                     if p.cpu_pct > 50.0 {
-                        Style::default().fg(Color::LightRed)
+                        Style::default().fg(Color::Red)
                     } else {
                         Style::default()
                     },
@@ -876,6 +1041,7 @@ fn render_process_table(
                 Span::raw(p.cpu_working_set_mb.to_string()),
                 Span::raw(p.gpu_shared_mb.to_string()),
                 Span::raw(p.npu_shared_mb.to_string()),
+                Span::styled(core_label, Style::default().fg(core_color)),
                 Span::raw(format!(
                     "P:{}/E:{}",
                     p.lion_cove_p_threads, p.skymont_lpe_threads
@@ -892,18 +1058,7 @@ fn render_process_table(
         })
         .collect();
 
-    let sort_label = match ui_state.process_sort {
-        ProcessSortMode::CpuDesc => "CPU %",
-        ProcessSortMode::MemoryDesc => "Memory",
-        ProcessSortMode::PidAsc => "PID",
-        ProcessSortMode::NameAsc => "Name",
-    };
-
-    let title = format!(
-        " Process & Thread Placement Table ({} matching, sorted by {}) ",
-        filtered_procs.len(),
-        sort_label
-    );
+    let title = format_process_table_title(ui_state, matching_count);
 
     let table = Table::new(
         rows,
@@ -911,12 +1066,13 @@ fn render_process_table(
             Constraint::Length(8),
             Constraint::Length(22),
             Constraint::Length(8),
-            Constraint::Length(10),
+            Constraint::Length(9),
+            Constraint::Length(9),
+            Constraint::Length(9),
+            Constraint::Length(9),
             Constraint::Length(9),
             Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(15),
+            Constraint::Length(12),
             Constraint::Length(8),
         ],
     )
@@ -931,45 +1087,64 @@ fn render_process_table(
     frame.render_widget(table, area);
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, ui_state: &UiState) {
-    let text = if ui_state.filter_mode {
-        Line::from(vec![
-            Span::styled(
-                " FILTER MODE: ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" [{}] ", ui_state.process_filter),
-                Style::default().fg(Color::White),
-            ),
-            Span::styled(
-                "Type filter text | Press Enter/Esc to confirm | Backspace to erase",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
+pub fn format_process_table_title(ui_state: &UiState, total_matching: usize) -> String {
+    if ui_state.filter_mode {
+        format!(" Process List [Filter: {}_] ", ui_state.process_filter)
+    } else if !ui_state.process_filter.is_empty() && ui_state.scroll_offset > 0 {
+        format!(
+            " Process List [Filter: {}] [Offset: +{}/{}] ",
+            ui_state.process_filter, ui_state.scroll_offset, total_matching
+        )
+    } else if !ui_state.process_filter.is_empty() {
+        format!(" Process List [Filter: {}] ", ui_state.process_filter)
+    } else if ui_state.scroll_offset > 0 {
+        format!(
+            " Process List [Offset: +{}/{}] ",
+            ui_state.scroll_offset, total_matching
+        )
     } else {
-        Line::from(vec![
-            Span::styled(
-                " q/Esc:Quit ",
-                Style::default().fg(Color::Black).bg(Color::DarkGray),
-            ),
-            Span::styled(" c:CPU ", Style::default().fg(Color::Yellow)),
-            Span::styled(" m:Mem ", Style::default().fg(Color::Cyan)),
-            Span::styled(" p:PID ", Style::default().fg(Color::White)),
-            Span::styled(" n:Name ", Style::default().fg(Color::LightGreen)),
-            Span::styled(" /:Filter ", Style::default().fg(Color::LightMagenta)),
-            Span::styled(
-                " j/k/Down/Up/PgUp/PgDn:Scroll ",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
-    };
+        " Process List ".to_string()
+    }
+}
 
-    let paragraph = Paragraph::new(text);
-    frame.render_widget(paragraph, area);
+fn render_footer(frame: &mut Frame, area: Rect) {
+    let footer_text = Line::from(vec![
+        Span::styled(
+            " Q / Esc",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Quit | "),
+        Span::styled(
+            "▲/▼ or j/k",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Scroll | "),
+        Span::styled(
+            "c/m/p/n",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Sort | "),
+        Span::styled(
+            "/",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Filter | "),
+        Span::styled(
+            "P-Core: 0-3 (Lion Cove) | LP-E: 4-7 (Skymont)",
+            Style::default().fg(Color::Yellow),
+        ),
+    ]);
+
+    let footer = Paragraph::new(footer_text);
+    frame.render_widget(footer, area);
 }
 
 #[cfg(test)]
@@ -989,7 +1164,7 @@ mod tests {
         );
         let ui_state = UiState::default();
 
-        let backend = TestBackend::new(120, 40);
+        let backend = TestBackend::new(140, 45);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal
@@ -1008,10 +1183,53 @@ mod tests {
         }
 
         assert!(content.contains("MUTOP-AI"));
-        assert!(content.contains("Lion Cove"));
+        assert!(content.contains("CPU Subsystem"));
+        assert!(content.contains("LionCove"));
         assert!(content.contains("Skymont"));
-        assert!(content.contains("140V"));
+        assert!(content.contains("Dual-Accelerator"));
+        assert!(content.contains("Arc 140V"));
         assert!(content.contains("AI Boost"));
-        assert!(content.contains("16384 MB"));
+        assert!(content.contains("LPDDR5X RAM"));
+        assert!(content.contains("Package Pwr"));
+        assert!(content.contains("Process List"));
+    }
+
+    #[test]
+    fn test_ui_state_defaults() {
+        let state = UiState::default();
+        assert_eq!(state.process_sort, ProcessSortMode::CpuDesc);
+        assert!(state.process_filter.is_empty());
+        assert!(!state.filter_mode);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_format_process_table_title() {
+        let mut state = UiState::default();
+        assert_eq!(format_process_table_title(&state, 20), " Process List ");
+
+        state.scroll_offset = 5;
+        assert_eq!(
+            format_process_table_title(&state, 20),
+            " Process List [Offset: +5/20] "
+        );
+
+        state.process_filter = "llama".to_string();
+        assert_eq!(
+            format_process_table_title(&state, 2),
+            " Process List [Filter: llama] [Offset: +5/2] "
+        );
+
+        state.scroll_offset = 0;
+        assert_eq!(
+            format_process_table_title(&state, 2),
+            " Process List [Filter: llama] "
+        );
+
+        state.filter_mode = true;
+        assert_eq!(
+            format_process_table_title(&state, 2),
+            " Process List [Filter: llama_] "
+        );
     }
 }
