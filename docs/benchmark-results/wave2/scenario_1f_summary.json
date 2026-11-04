@@ -1,0 +1,40 @@
+{
+  "Piper_cpu_p": {
+    "core_target": "Lion Cove P-cores (C0..C3)",
+    "affinity_mask": "0x0F",
+    "total_audio_sec": 41.25,
+    "total_synth_sec": 2.87,
+    "overall_rtf": 0.0697,
+    "throughput_x": 14.36,
+    "telemetry": {
+      "power_median_w": 4.25,
+      "power_max_w": 14.36,
+      "fan_median_rpm": 3125,
+      "fan_max_rpm": 4018,
+      "cpu_total_median_pct": 18.3,
+      "cpu_p_core_median_pct": 0.0,
+      "cpu_lpe_core_median_pct": 30.6,
+      "cpu_temp_median_c": 46.0
+    },
+    "log_file": "C:\\develop\\mutop\\logs\\scenario_1f_cpu_p.log"
+  },
+  "Piper_cpu_lpe": {
+    "core_target": "Skymont LP-E cores (C4..C7)",
+    "affinity_mask": "0xF0",
+    "total_audio_sec": 41.25,
+    "total_synth_sec": 2.91,
+    "overall_rtf": 0.0705,
+    "throughput_x": 14.18,
+    "telemetry": {
+      "power_median_w": 3.7,
+      "power_max_w": 13.36,
+      "fan_median_rpm": 3140,
+      "fan_max_rpm": 3497,
+      "cpu_total_median_pct": 15.7,
+      "cpu_p_core_median_pct": 1.9,
+      "cpu_lpe_core_median_pct": 30.2,
+      "cpu_temp_median_c": 46.0
+    },
+    "log_file": "C:\\develop\\mutop\\logs\\scenario_1f_cpu_lpe.log"
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "Gemma-4-E2B": {
+    "model": "E2B",
+    "server_vulkan": {
+      "pp512_tok_s": 611.34,
+      "tg128_tok_s": 38.37,
+      "pp_tokens": 395,
+      "tg_tokens": 128
+    },
+    "telemetry": {
+      "power_min_w": 2.58,
+      "power_median_w": 12.8,
+      "power_max_w": 24.74,
+      "fan_median_rpm": 3947,
+      "fan_max_rpm": 5579,
+      "cpu_total_median_pct": 9.9,
+      "gpu_median_pct": 16.0,
+      "gpu_max_pct": 100.0,
+      "cpu_temp_median_c": 53.0,
+      "cpu_temp_max_c": 82.0,
+      "npu_gpu_active_share_pct": 53.2
+    },
+    "bench_vulkan": "| model                          |       size |     params | backend    | ngl |            test |                  t/s |\n| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |\n| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | Vulkan     |  99 |           pp512 |      1035.50 \u00c2\u00b1 14.22 |\n| gemma4 E2B Q4_K - Medium       |   2.88 GiB |     4.65 B | Vulkan     |  99 |           tg128 |         42.19 \u00c2\u00b1 1.15 |\n\nbuild: d327bf1f0 (11869)",
+    "bench_sycl": "Error: Command '['C:\\\\tools\\\\llama.cpp-sycl\\\\llama-bench.exe', '-m', 'C:\\\\Users\\\\peter\\\\models\\\\slm\\\\gemma-4-E2B-it-Q4_K_M.gguf', '-ngl', '99', '-p', '512', '-n', '128', '-r', '2']' timed out after 150 seconds"
+  },
+  "Gemma-4-E4B": {
+    "model": "E4B",
+    "server_vulkan": {
+      "pp512_tok_s": 383.68,
+      "tg128_tok_s": 25.01,
+      "pp_tokens": 395,
+      "tg_tokens": 128
+    },
+    "telemetry": {
+      "power_min_w": 2.73,
+      "power_median_w": 11.62,
+      "power_max_w": 27.61,
+      "fan_median_rpm": 4116,
+      "fan_max_rpm": 5769,
+      "cpu_total_median_pct": 10.9,
+      "gpu_median_pct": 6.5,
+      "gpu_max_pct": 100.0,
+      "cpu_temp_median_c": 55.0,
+      "cpu_temp_max_c": 88.0,
+      "npu_gpu_active_share_pct": 43.0
+    },
+    "bench_vulkan": "| model                          |       size |     params | backend    | ngl |            test |                  t/s |\n| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |\n| gemma4 E4B Q4_K - Medium       |   4.62 GiB |     7.52 B | Vulkan     |  99 |           pp512 |        489.69 \u00c2\u00b1 6.97 |\n| gemma4 E4B Q4_K - Medium       |   4.62 GiB |     7.52 B | Vulkan     |  99 |           tg128 |         27.03 \u00c2\u00b1 0.56 |\n\nbuild: d327bf1f0 (11869)",
+    "bench_sycl": "| model                          |       size |     params | backend    | ngl |            test |                  t/s |\n| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |\n| gemma4 E4B Q4_K - Medium       |   4.62 GiB |     7.52 B | SYCL       |  99 |           pp512 |        292.70 \u00c2\u00b1 0.71 |\n| gemma4 E4B Q4_K - Medium       |   4.62 GiB |     7.52 B | SYCL       |  99 |           tg128 |         26.68 \u00c2\u00b1 0.06 |\n\nbuild: d327bf1f0 (11869)"
+  }
+}

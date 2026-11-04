@@ -27,5 +27,7 @@ Thumbs.db
 *markers*.txt
 __pycache__/
 *.pyc
+logs/
+
 
 

@@ -1,0 +1,82 @@
+{
+  "Moonshine_tiny_cpu_p": {
+    "tier": "tiny",
+    "core_target": "Lion Cove P-cores (C0..C3)",
+    "affinity_mask": "0x0F",
+    "latency_ms": 88.0,
+    "rtf": 0.0088,
+    "throughput_x": 113.58,
+    "telemetry": {
+      "power_median_w": 6.46,
+      "power_max_w": 9.09,
+      "fan_median_rpm": 2860,
+      "fan_max_rpm": 2974,
+      "cpu_total_median_pct": 50.0,
+      "cpu_p_core_median_pct": 24.7,
+      "cpu_lpe_core_median_pct": 85.4,
+      "proc_cpu_median_pct": 41.3,
+      "cpu_temp_median_c": 45.0
+    },
+    "log_file": "C:\\develop\\mutop\\logs\\scenario_1e_tiny_cpu_p.log"
+  },
+  "Moonshine_tiny_cpu_lpe": {
+    "tier": "tiny",
+    "core_target": "Skymont LP-E cores (C4..C7)",
+    "affinity_mask": "0xF0",
+    "latency_ms": 87.1,
+    "rtf": 0.0087,
+    "throughput_x": 114.83,
+    "telemetry": {
+      "power_median_w": 5.93,
+      "power_max_w": 15.48,
+      "fan_median_rpm": 3013,
+      "fan_max_rpm": 3013,
+      "cpu_total_median_pct": 51.0,
+      "cpu_p_core_median_pct": 19.0,
+      "cpu_lpe_core_median_pct": 89.3,
+      "proc_cpu_median_pct": 43.7,
+      "cpu_temp_median_c": 47.0
+    },
+    "log_file": "C:\\develop\\mutop\\logs\\scenario_1e_tiny_cpu_lpe.log"
+  },
+  "Moonshine_base_cpu_p": {
+    "tier": "base",
+    "core_target": "Lion Cove P-cores (C0..C3)",
+    "affinity_mask": "0x0F",
+    "latency_ms": 181.0,
+    "rtf": 0.0181,
+    "throughput_x": 55.25,
+    "telemetry": {
+      "power_median_w": 6.48,
+      "power_max_w": 6.83,
+      "fan_median_rpm": 3027,
+      "fan_max_rpm": 3375,
+      "cpu_total_median_pct": 50.0,
+      "cpu_p_core_median_pct": 1.9,
+      "cpu_lpe_core_median_pct": 100.0,
+      "proc_cpu_median_pct": 47.7,
+      "cpu_temp_median_c": 47.0
+    },
+    "log_file": "C:\\develop\\mutop\\logs\\scenario_1e_base_cpu_p.log"
+  },
+  "Moonshine_base_cpu_lpe": {
+    "tier": "base",
+    "core_target": "Skymont LP-E cores (C4..C7)",
+    "affinity_mask": "0xF0",
+    "latency_ms": 188.1,
+    "rtf": 0.0188,
+    "throughput_x": 53.15,
+    "telemetry": {
+      "power_median_w": 6.44,
+      "power_max_w": 6.86,
+      "fan_median_rpm": 3140,
+      "fan_max_rpm": 3358,
+      "cpu_total_median_pct": 50.0,
+      "cpu_p_core_median_pct": 2.1,
+      "cpu_lpe_core_median_pct": 100.0,
+      "proc_cpu_median_pct": 47.8,
+      "cpu_temp_median_c": 46.0
+    },
+    "log_file": "C:\\develop\\mutop\\logs\\scenario_1e_base_cpu_lpe.log"
+  }
+}
