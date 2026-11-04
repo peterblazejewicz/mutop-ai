@@ -11,17 +11,13 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::{Duration, Instant};
 
-use edgetop_core::cli::{parse_args, CliAction};
+use edgetop_core::cli::{init_console_utf8, parse_args, CliAction};
 use edgetop_core::{EdgePlatform, TickContext};
 use mutop_ai::platform::MutopPlatform;
 use mutop_ai::ui::{render_ui, ProcessSortMode, UiState};
 
 fn main() -> Result<()> {
-    #[cfg(windows)]
-    unsafe {
-        windows_sys::Win32::System::Console::SetConsoleOutputCP(65001);
-        windows_sys::Win32::System::Console::SetConsoleCP(65001);
-    }
+    init_console_utf8();
 
     // Install panic hook restoring terminal raw mode & alternate screen
     let default_hook = std::panic::take_hook();

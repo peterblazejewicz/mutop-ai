@@ -9,6 +9,7 @@ pub mod gpu;
 pub mod memory;
 pub mod network;
 pub mod npu;
+pub mod pawnio;
 pub mod pdh;
 pub mod power;
 pub mod processes;
@@ -150,7 +151,7 @@ impl HardwareCollector {
             self.pdh_state.as_ref(),
             is_mock,
         );
-        let gpu = collect_gpu_snapshot(
+        let mut gpu = collect_gpu_snapshot(
             &self.adapters,
             &engine_items,
             self.pdh_state.as_ref(),
@@ -185,6 +186,9 @@ impl HardwareCollector {
         }
         if gpu.temperature_c.is_some() {
             power_thermals.gpu_c = gpu.temperature_c;
+        }
+        if gpu.power_w.is_none() && power_thermals.gpu_pp1_w > 0.0 {
+            gpu.power_w = Some(power_thermals.gpu_pp1_w as f32);
         }
 
         let tracked_processes = if !tracked_patterns.is_empty() || is_mock {

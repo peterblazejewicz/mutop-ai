@@ -7,10 +7,29 @@ use crate::snapshot::types::{EffectivePowerMode, PowerThermalSnapshot};
 use std::time::Duration;
 use std::time::Instant;
 
+/// Parses raw tenths-of-Kelvin temperature reading from ACPI thermal zone counter.
+///
+/// Filters out known firmware dummy constants (`3000` or `3010` tenths of Kelvin,
+/// which correspond to hardcoded 26.85°C / 27.85°C in ACPI DSDT/SSDT when no EC is present,
+/// e.g. LattePanda Mu Ultra `DFR1293` with `ETMD == 0`).
+pub fn parse_acpi_thermal_reading(raw_k_tenths: f64) -> Option<f32> {
+    if (2999.5..=3010.5).contains(&raw_k_tenths) {
+        return None;
+    }
+    let c = (raw_k_tenths / 10.0) - 273.15;
+    if (0.0..=120.0).contains(&c) {
+        Some(c as f32)
+    } else {
+        None
+    }
+}
+
 #[derive(Default)]
 pub struct PowerCollectorState {
     pub last_mode_poll: Option<Instant>,
     pub cached_mode: EffectivePowerMode,
+    pub pawnio: Option<crate::hardware::pawnio::PawnIoSensorReader>,
+    pub pawnio_initialized: bool,
 }
 
 pub fn collect_power_thermal_snapshot(
@@ -155,10 +174,10 @@ fn collect_windows_power_thermal(
         }
 
         let thermal_items = pdh.read_array("thermals");
-        if let Some((_, raw_k_tenths)) = thermal_items.first() {
-            let c = (*raw_k_tenths / 10.0) - 273.15;
-            if (0.0..=120.0).contains(&c) {
-                acpi_thermal_zone_c = Some(c as f32);
+        for (_, raw_k_tenths) in &thermal_items {
+            if let Some(c) = parse_acpi_thermal_reading(*raw_k_tenths) {
+                acpi_thermal_zone_c = Some(c);
+                break;
             }
         }
     }
@@ -172,6 +191,19 @@ fn collect_windows_power_thermal(
         state.last_mode_poll = Some(Instant::now());
     }
     let effective_power_mode = state.cached_mode;
+
+    if !state.pawnio_initialized {
+        state.pawnio = crate::hardware::pawnio::PawnIoSensorReader::new();
+        state.pawnio_initialized = true;
+    }
+
+    let mut cpu_package_dts_c = None;
+    let mut cpu_fan_rpm = None;
+
+    if let Some(ref pawnio) = state.pawnio {
+        cpu_package_dts_c = pawnio.read_cpu_temp();
+        cpu_fan_rpm = pawnio.read_fan_rpm();
+    }
 
     let baseline = if idle_baseline_w > 0.0 {
         idle_baseline_w
@@ -197,9 +229,9 @@ fn collect_windows_power_thermal(
         nvme_composite_c: None,
         nvme_asic_c: None,
         nvme_nand_c: None,
-        cpu_package_dts_c: None,
+        cpu_package_dts_c,
         cpu_core_dts_c: None,
-        cpu_fan_rpm: None,
+        cpu_fan_rpm,
     }
 }
 
@@ -246,4 +278,27 @@ fn query_effective_power_mode() -> EffectivePowerMode {
 #[cfg(not(windows))]
 fn collect_linux_power_thermal(idle_baseline_w: f64) -> PowerThermalSnapshot {
     mock_power_thermal_snapshot(idle_baseline_w)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_acpi_thermal_reading_filters_dummy_constants() {
+        // Known ACPI dummy constants on LattePanda Mu Ultra (0x0BB8 / 3000 and 3010 tenths of K)
+        assert_eq!(parse_acpi_thermal_reading(3000.0), None);
+        assert_eq!(parse_acpi_thermal_reading(3010.0), None);
+        assert_eq!(parse_acpi_thermal_reading(3005.0), None);
+
+        // Valid temperatures
+        let valid_reading = 3181.5; // (318.15 - 273.15) = 45.0°C
+        let parsed = parse_acpi_thermal_reading(valid_reading);
+        assert!(parsed.is_some());
+        assert!((parsed.unwrap() - 45.0).abs() < 0.1);
+
+        // Out of range (< 0°C or > 120°C)
+        assert_eq!(parse_acpi_thermal_reading(2000.0), None); // -73°C
+        assert_eq!(parse_acpi_thermal_reading(4500.0), None); // 176°C
+    }
 }

@@ -118,6 +118,15 @@ fn test_mutop_platform_oneshot_format() {
     assert!(oneshot.contains("Arc 140V GPU"));
     assert!(oneshot.contains("AI Boost NPU 4"));
     assert!(oneshot.contains("16 GB LPDDR5X-8533 MoP"));
+    assert!(oneshot.contains("Thermals: CPU: 48.5C | GPU: 44.0C | NVMe: 41.0C | Fan: 2400 RPM"));
+
+    // Fallback when CPU package DTS & ACPI thermal zone are None and Fan is None
+    let mut fallback_snap = snapshot.clone();
+    fallback_snap.power_thermals.cpu_package_dts_c = None;
+    fallback_snap.power_thermals.acpi_thermal_zone_c = None;
+    fallback_snap.power_thermals.cpu_fan_rpm = None;
+    let fallback_oneshot = platform.format_oneshot(&fallback_snap);
+    assert!(fallback_oneshot.contains("Thermals: CPU: - | GPU: 44.0C | NVMe: 41.0C | Fan: Auto"));
 }
 
 #[test]
@@ -218,6 +227,16 @@ fn test_mutop_cli_parsing_dispatch() {
             assert!(opts.summary);
         }
         _ => panic!("Expected Stream action"),
+    }
+
+    // Verify automatic Stream action inference when -d / --summary is passed without -s
+    match parse_args(["mutop-ai", "-d", "2", "--summary"], meta).unwrap() {
+        CliAction::Stream(opts) => {
+            assert_eq!(opts.duration_secs, Some(2));
+            assert!(opts.summary);
+            assert_eq!(opts.interval_ms, meta.default_stream_interval_ms);
+        }
+        _ => panic!("Expected inferred Stream action when -d and --summary are passed"),
     }
 
     match parse_args(["mutop-ai", "--mcp"], meta).unwrap() {

@@ -293,11 +293,49 @@ fn test_individual_collectors() {
 }
 
 #[test]
+fn test_acpi_dummy_temperature_filtering() {
+    use mutop_ai::hardware::power::parse_acpi_thermal_reading;
+
+    // Firmwares on carrier boards without EC (e.g. LattePanda Mu Ultra DFR1293)
+    // report dummy constants 0x0BB8 (3000) or 3010 tenths of Kelvin (~26.85°C / ~27.85°C)
+    assert!(parse_acpi_thermal_reading(3000.0).is_none());
+    assert!(parse_acpi_thermal_reading(3010.0).is_none());
+    assert!(parse_acpi_thermal_reading(3005.0).is_none());
+
+    // Legitimate readings (e.g. 45°C = 318.15 K = 3181.5 tenths of K)
+    assert!(parse_acpi_thermal_reading(3181.5).is_some());
+    let temp = parse_acpi_thermal_reading(3181.5).unwrap();
+    assert!((temp - 45.0).abs() < 0.1);
+
+    // Out of realistic hardware range
+    assert!(parse_acpi_thermal_reading(2000.0).is_none()); // -73°C
+    assert!(parse_acpi_thermal_reading(4500.0).is_none()); // 176°C
+}
+
+#[test]
 fn test_print_schema_and_version() {
     use mutop_ai::{print_schema, version};
     assert_eq!(version(), "0.1.0");
     // Verify print_schema runs cleanly
     print_schema();
+}
+
+#[test]
+fn test_pawnio_sensor_reader_graceful_lifecycle() {
+    use mutop_ai::hardware::pawnio::PawnIoSensorReader;
+
+    // Must never panic regardless of whether PawnIO driver is installed or absent
+    let reader = PawnIoSensorReader::new();
+    if let Some(r) = reader {
+        let temp = r.read_cpu_temp();
+        if let Some(t) = temp {
+            assert!((10.0..=120.0).contains(&t));
+        }
+        let fan = r.read_fan_rpm();
+        if let Some(rpm) = fan {
+            assert!((100..=15_000).contains(&rpm));
+        }
+    }
 }
 
 #[test]

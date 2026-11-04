@@ -191,8 +191,12 @@ impl EdgePlatform for MutopPlatform {
         let net_tx_mb_s = total_tx_mbps / 8.0;
 
         let mut temps = Vec::new();
-        if let Some(t) = snapshot.power_thermals.acpi_thermal_zone_c {
-            temps.push(("acpi".to_string(), t));
+        if let Some(t) = snapshot
+            .power_thermals
+            .cpu_package_dts_c
+            .or(snapshot.power_thermals.acpi_thermal_zone_c)
+        {
+            temps.push(("cpu".to_string(), t));
         }
         if let Some(t) = snapshot.power_thermals.gpu_c {
             temps.push(("gpu".to_string(), t));
@@ -345,8 +349,9 @@ impl EdgePlatform for MutopPlatform {
         let peak_temp = snapshot
             .power_thermals
             .cpu_package_dts_c
-            .or(snapshot.power_thermals.gpu_c)
             .or(snapshot.power_thermals.acpi_thermal_zone_c)
+            .or(snapshot.power_thermals.gpu_c)
+            .or(snapshot.power_thermals.nvme_composite_c)
             .unwrap_or(45.0);
         let thermal_headroom_c = Some(((100.0 - peak_temp).max(0.0)) as i32);
 
@@ -513,29 +518,32 @@ impl EdgePlatform for MutopPlatform {
             snapshot.power_thermals.gpu_pp1_w,
             snapshot.power_thermals.dram_w
         );
+        let cpu_temp_str = snapshot
+            .power_thermals
+            .cpu_package_dts_c
+            .or(snapshot.power_thermals.acpi_thermal_zone_c)
+            .map(|t| format!("{:.1}C", t))
+            .unwrap_or_else(|| "-".to_string());
+        let gpu_temp_str = snapshot
+            .power_thermals
+            .gpu_c
+            .map(|t| format!("{:.1}C", t))
+            .unwrap_or_else(|| "-".to_string());
+        let nvme_temp_str = snapshot
+            .power_thermals
+            .nvme_composite_c
+            .map(|t| format!("{:.1}C", t))
+            .unwrap_or_else(|| "-".to_string());
+        let fan_str = snapshot
+            .power_thermals
+            .cpu_fan_rpm
+            .map(|r| format!("{} RPM", r))
+            .unwrap_or_else(|| "Auto".to_string());
+
         let _ = writeln!(
             out,
-            "  Thermals: ACPI: {} | GPU: {} | NVMe: {} | Fan: {}",
-            snapshot
-                .power_thermals
-                .acpi_thermal_zone_c
-                .map(|t| format!("{:.1}C", t))
-                .unwrap_or_else(|| "-".to_string()),
-            snapshot
-                .power_thermals
-                .gpu_c
-                .map(|t| format!("{:.1}C", t))
-                .unwrap_or_else(|| "-".to_string()),
-            snapshot
-                .power_thermals
-                .nvme_composite_c
-                .map(|t| format!("{:.1}C", t))
-                .unwrap_or_else(|| "-".to_string()),
-            snapshot
-                .power_thermals
-                .cpu_fan_rpm
-                .map(|r| format!("{} RPM", r))
-                .unwrap_or_else(|| "-".to_string())
+            "  Thermals: CPU: {} | GPU: {} | NVMe: {} | Fan: {}",
+            cpu_temp_str, gpu_temp_str, nvme_temp_str, fan_str
         );
         let _ = writeln!(out);
         let _ = writeln!(

@@ -771,9 +771,10 @@ fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: 
     ]));
 
     // Thermals & fan & AI health
-    let acpi_t = snapshot
+    let cpu_t = snapshot
         .power_thermals
-        .acpi_thermal_zone_c
+        .cpu_package_dts_c
+        .or(snapshot.power_thermals.acpi_thermal_zone_c)
         .map(|t| format!("{:.0}°C", t))
         .unwrap_or_else(|| "-".to_string());
     let gpu_t = snapshot
@@ -789,8 +790,8 @@ fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: 
     let fan_rpm = snapshot
         .power_thermals
         .cpu_fan_rpm
-        .map(|r| format!("{} RPM", r))
-        .unwrap_or_else(|| "-".to_string());
+        .map(|r| format!("{:4} RPM", r))
+        .unwrap_or_else(|| "Auto".to_string());
 
     let (ai_status_str, ai_status_col) = match snapshot.ai_diagnostics.status {
         DiagnosticStatus::Healthy => ("HEALTHY", Color::LightGreen),
@@ -801,7 +802,7 @@ fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: 
     lines.push(Line::from(vec![
         Span::styled("Thermals   : ", Style::default().fg(Color::LightRed)),
         Span::styled(
-            format!("ACPI:{} GPU:{} NVMe:{} ", acpi_t, gpu_t, nvme_t),
+            format!("CPU:{} GPU:{} NVMe:{} ", cpu_t, gpu_t, nvme_t),
             Style::default().fg(Color::White),
         ),
         Span::styled(
