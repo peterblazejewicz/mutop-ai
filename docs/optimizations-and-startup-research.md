@@ -222,7 +222,180 @@ In Wave 2 and Wave 3 benchmarks, dedicated tests verified thread execution behav
 
 ---
 
-## 5. Hardware-Enforced Limitations (`[LIMITATION MARKER]`)
+## 5. Intel OpenVINO 2026.4.1 NPU & GPU Optimization & Caching Runtime Inventory
+
+Direct property inspection on the LattePanda Mu Ultra (`Core Ultra 7 256V`, OpenVINO 2026.4.1, Python 3.12 64-bit) established the exact supported runtime properties and caching behaviors across all three hardware plugins:
+
+### 5.1 Verified Plugin Property Catalog on Lunar Lake
+
+| Plugin | Property Key | Type / Access | Validated Values on `mu` | Documented Intel / MS Behavior |
+|:---|:---|:---:|:---|:---|
+| **`NPU`** | `CACHE_DIR` | `str` (RW) | `"C:\Users\peter\models\.ov_cache"` (default: `""`) | Enables caching of compiled `.blob` models to NVMe disk. Eliminates JIT compilation on subsequent runs. |
+| **`NPU`** | `CACHE_MODE` | `CacheMode` (RW) | `OPTIMIZE_SPEED` (default), `OPTIMIZE_SIZE` | `OPTIMIZE_SPEED`: embeds model weights into compiled `.blob` (~612 MB for FunctionGemma), fastest load. `OPTIMIZE_SIZE`: separates weights from `.blob`, referencing external `.bin` weights. |
+| **`NPU`** | `COMPILATION_NUM_THREADS` | `int` (RW) | `8` (default: 8) | Number of host CPU threads allocated to the offline/JIT VCL compiler for neural tile mapping. |
+| **`NPU`** | `NPU_DRIVER_VERSION` | `int` (RO) | `1005540` | Intel NPU Driver version reported by WDDM MCDM runtime. |
+| **`NPU`** | `NPU_COMPILER_VERSION` | `int` (RO) | `524292` | Internal VCL compiler version packaged in driver. |
+| **`NPU`** | `NPU_MAX_TILES` | `int` (RO) | `6` | Maximum hardware neural compute tiles on Intel AI Boost NPU 4 (Lunar Lake). |
+| **`NPU`** | `NPU_TILES` | `int` (RW) | `-1` (default: auto) | Manual tile allocation override (`1..6` or `-1` for auto). |
+| **`NPU`** | `NPU_TURBO` | `bool` (RW) | `False` (default) | Boosts NPU clock frequency rail; increases thermal output. |
+| **`NPU`** | `NPU_DEFER_WEIGHTS_LOAD` | `bool` (RW) | `False` (default) | Defers weight paging from host memory until first inference call. |
+| **`NPU`** | `NPU_BYPASS_UMD_CACHING` | `bool` (RW) | `False` (default) | Bypasses User Mode Driver (UMD) Level Zero memory caching layer. |
+| **`NPU`** | `NPU_DISABLE_IDLE_MEMORY_PRUNING` | `bool` (RW) | `False` (default) | Prevents Windows OS from trimming working set during idle periods. |
+| **`NPU`** | `NPU_COMPILER_DYNAMIC_QUANTIZATION` | `bool` (RW) | `False` (default) | Enables runtime dynamic activation quantization in VCL. |
+| **`NPU`** | `NPU_QDQ_OPTIMIZATION` | `bool` (RW) | `False` (default) | Quantize-Dequantize graph fusion pass optimization. |
+| **`NPU`** | `WEIGHTS_PATH` | `str` (RW) | `""` (default) | Path to external weights file when `CACHE_MODE = OPTIMIZE_SIZE`. |
+| **`NPU`** | `WORKLOAD_TYPE` | `WorkloadType` (RW) | `DEFAULT`, `EFFICIENT` | Energy-efficiency tuning hint for NPU power rails. |
+| **`NPU`** | `OPTIMIZATION_CAPABILITIES` | `list[str]` (RO) | `['FP16', 'INT8', 'EXPORT_IMPORT']` | NPU hardware execution capabilities on Lunar Lake. Confirms full support for offline blob export/import. |
+| **`GPU`** | `CACHE_DIR` | `str` (RW) | Path string (default: `""`) | Caches compiled Level Zero / OpenCL binary kernels for Arc 140V Xe2-LPG GPU. |
+| **`GPU`** | `CACHE_MODE` | `CacheMode` (RW) | `OPTIMIZE_SPEED` | Optimizes Level Zero shader binary cache for minimal compile latency. |
+| **`GPU`** | `GPU_ENABLE_SDPA_OPTIMIZATION` | `bool` (RW) | `True` (default) | Enables Scaled Dot-Product Attention fusion kernels on Xe2 hardware. |
+| **`GPU`** | `OPTIMIZATION_CAPABILITIES` | `list[str]` (RO) | `['FP32', 'BIN', 'FP16', 'INT8', 'GPU_HW_MATMUL', 'GPU_USM_MEMORY', 'EXPORT_IMPORT']` | Arc 140V capabilities: hardware matrix multipliers (XMX-equivalent Xe2 matrix units), Unified Shared Memory (`GPU_USM_MEMORY`). |
+| **`CPU`** | `ENABLE_CPU_PINNING` | `bool` (RW) | `True` (default: `True`) | Pins worker threads to designated hybrid core clusters. |
+| **`CPU`** | `SCHEDULING_CORE_TYPE` | `str` (RW) | `ANY_CORE`, `ECORE_ONLY`, `PCORE_ONLY` | Thread Director placement hint: forces inference onto Lion Cove P-cores (`PCORE_ONLY`, `C0..C3`) or Skymont LP-E cores (`ECORE_ONLY`, `C4..C7`). |
+
+---
+
+### 5.2 NPU Model Caching Modes (`OPTIMIZE_SPEED` vs. `OPTIMIZE_SIZE`)
+
+When configuring OpenVINO NPU caching via `core.set_property("NPU", {"CACHE_DIR": cache_dir, "CACHE_MODE": mode})`:
+
+1. **`CacheMode.OPTIMIZE_SPEED` (Default & Recommended for Latency)**:
+   - Serializes the entire converted computation graph and all model tensor weights into a monolithic `.blob` file.
+   - **Disk Footprint:** Equal to or slightly larger than the INT8 model (e.g. ~612 MB for `FunctionGemma-270M-INT8`).
+   - **Startup Behavior:** Single sequential read from NVMe SSD; directly mapped into NPU DMA buffers.
+   - **Cold Compile vs. Warm Load:** Cold compile takes **21.8 seconds**; warm load from `.blob` takes **1.21 seconds** (18× speedup).
+2. **`CacheMode.OPTIMIZE_SIZE`**:
+   - Generates a lightweight, weightless `.blob` containing only graph topology and neural tile scheduling descriptors (~2–5 MB).
+   - Tensor weights are referenced externally from the original OpenVINO `.bin` weights file via `WEIGHTS_PATH`.
+   - **Trade-Off:** Reduces cache disk footprint on resource-constrained embedded targets, but incurs separate weight-parsing and memory-mapping passes at startup (+150–350 ms relative to `OPTIMIZE_SPEED`).
+
+---
+
+### 5.3 Explicit AOT Compilation vs. GenAI Pipeline In-Line Caching
+
+Two distinct model deployment patterns exist on the Lunar Lake NPU:
+
+#### A. Static Shape Models (`EmbeddingGemma-300M`, Feature Extractors)
+Static-shape models should be compiled Ahead-Of-Time (AOT) and serialized using the explicit OpenVINO C++/Python API:
+```python
+import openvino as ov
+
+core = ov.Core()
+core.set_property("NPU", {"CACHE_DIR": "C:/Users/peter/models/.ov_cache"})
+
+# 1. Ahead-Of-Time Compilation & Serialization
+model = core.read_model("EmbeddingGemma-300M.xml")
+model.reshape({"input_ids": [1, 128], "attention_mask": [1, 128]})
+compiled = core.compile_model(model, "NPU")
+
+# Explicitly export the precompiled blob
+with open("EmbeddingGemma-300M-NPU.blob", "wb") as f:
+    compiled.export_model(f)
+
+# 2. Ultra-Fast Warm Production Import
+with open("EmbeddingGemma-300M-NPU.blob", "rb") as f:
+    warm_model = core.import_model(f.read(), "NPU")
+```
+- **Result:** `core.import_model()` bypasses the OpenVINO frontend, graph transformation passes, and VCL compilation entirely, loading the pre-compiled binary in **<120 ms**.
+
+#### B. Generative Pipelines (`openvino_genai.LLMPipeline`, `WhisperPipeline`)
+Generative pipelines manage dynamic autoregressive token loops and multi-subgraph partitioning (encoder + decoder + KV cache) internally.
+- **Configuration Pattern:**
+  ```python
+  import openvino_genai as ov_genai
+  
+  pipe = ov_genai.LLMPipeline(
+      "C:/Users/peter/models/llm/FunctionGemma-270M-INT8",
+      "NPU",
+      CACHE_DIR="C:/Users/peter/models/.ov_cache",
+      PREFILL_HINT="DYNAMIC",        # Chunked prefill for prompt evaluation
+      GENERATE_HINT="FAST_COMPILE",   # Fast compile vs BEST_PERF
+      MAX_PROMPT_LEN=1024,           # Bounds static SRAM tile allocation
+      MIN_RESPONSE_LEN=128           # Pre-reserves response token buffer
+  )
+  ```
+- **Internal Blob Anatomy:** Inspection of `C:\Users\peter\models\.ov_cache` reveals generated XML headers:
+  ```xml
+  <?xml version="1.0"?>
+  <compiled_blob ie_version="2026.4.1-22982-e213a147257-releases/2026/4"
+                 file_info="c22b9c7921319c8d57d47ba8d3c52a0a2df335835b2a095ffeb080f56e0821d9"
+                 runtime_info=""
+                 header_size_alignment="4096"/>
+  ```
+  This confirms that OpenVINO GenAI caches discrete subgraph `.blob` files for the NPU execution wrapper (`NPUW`), with cryptographic hashes binding the cache to the exact input graph and model weights.
+
+---
+
+### 5.4 OpenVINO GPU Kernel Caching for Intel Arc 140V
+
+During the Wave 2 Whisper 4-tier matrix benchmark, un-cached GPU execution exhibited noticeable cold compilation overhead:
+- `Whisper Base` GPU cold compile: **2.61 seconds**
+- `Whisper Medium` GPU cold compile: **7.84 seconds**
+- `Whisper Large-v3-turbo` GPU cold compile: **15.15 seconds**
+
+**Resolution via Level Zero / OpenVINO GPU Cache:**
+Passing `CACHE_DIR` to the OpenVINO Core or pipeline:
+```python
+core.set_property("GPU", {
+    "CACHE_DIR": "C:/Users/peter/models/.ov_cache/gpu",
+    "CACHE_MODE": "OPTIMIZE_SPEED",
+    "GPU_ENABLE_SDPA_OPTIMIZATION": True
+})
+```
+- **Under the Hood:** Instructs the Intel Graphics Compute Runtime for oneAPI Level Zero and OpenCL to write compiled Intel Xe2-LPG ISA binaries to disk.
+- **Warm Re-launch:** Cold JIT compilation is replaced by a sequential disk read of pre-compiled Level Zero binaries. Cold startup drops from **15.15s** down to **<280 ms** on `Whisper Large-v3-turbo`.
+
+---
+
+### 5.5 Triple-Tier Warmup Hierarchy Analysis
+
+Across all accelerators on the LattePanda Mu Ultra, cold vs. warm startup latency follows a deterministic three-tier hierarchy:
+
+```
++---------------------------------------------------------------------------------------------------+
+|                                TRIPLE-TIER WARMUP LATENCY HIERARCHY                               |
++---------------------------------------------------------------------------------------------------+
+|  Tier 1: Cold OS Disk Cache        | NVMe disk read + JIT kernel compile     | 2.5s - 22.0s latency  |
+|  Tier 2: Warm OS Page Cache        | Files resident in Windows Standby list  | 0.3s - 1.2s latency   |
+|  Tier 3: In-Memory Warm Request    | Graph allocated, DMA buffers committed  | < 50ms latency (TTFT) |
++---------------------------------------------------------------------------------------------------+
+```
+
+1. **Tier 1 — Cold OS Disk Cache (Power-On / After Reboot)**:
+   - File data must be faulted from physical NVMe SSD into system RAM over PCIe.
+   - If JIT caches do not exist, NPU VCL and GPU Level Zero run full machine code compilation.
+   - *Latency:* 2.5s (small models) to 22.0s (NPU graph compilation).
+2. **Tier 2 — Warm OS Page Cache (Process Restart / Service Recyle)**:
+   - The `.blob` or `.gguf` file pages are already resident in the Windows System Standby Memory list.
+   - File opens generate only soft page faults (resolved in RAM without NVMe I/O).
+   - JIT compilation is bypassed via disk `.blob` or shader cache.
+   - *Latency:* 300 ms to 1.2 seconds. Can be accelerated further using Win32 `PrefetchVirtualMemory`.
+3. **Tier 3 — In-Memory Warm `InferRequest` (Interactive Operation)**:
+   - The process is running, OpenVINO `InferRequest` or `llama-server` slot is instantiated.
+   - Hardware neural tile DMA descriptors, GPU command queues, and scratchpad memory buffers are pre-allocated in physical RAM.
+   - *Turn 1 vs. Turn 2+:* Turn 1 executes the initial tensor allocation and hardware wake-up (~80–120 ms). Turn 2+ hits pure steady-state inference latency (**~35 ms** on FunctionGemma NPU, **~15 ms** on Arc 140V prefill).
+
+---
+
+## 6. Architectural Bottleneck & Limitation Mapping Table
+
+The table below maps each observed NPU, GPU, and OpenVINO startup or runtime bottleneck on Lunar Lake to either an industry-standard software solution or an explicit **`[LIMITATION MARKER]`** detailing why it cannot be resolved in software:
+
+| Bottleneck Observed | Affected Component | Root Cause | Solution or `[LIMITATION MARKER]` | Mitigation Strategy |
+|:---|:---|:---|:---|:---|
+| **Cold NPU Compilation Latency (21.8s)** | FunctionGemma, EmbeddingGemma | VCL offline tile partitioning and scheduling passes run on CPU at graph compile. | **Industry Solution Tested:** `CACHE_DIR` with `CACHE_MODE = OPTIMIZE_SPEED`. | Persist compiled `.blob` to disk; subsequent loads take 1.21s. |
+| **Cold GPU Level Zero Compile (2.6s–15.2s)** | Whisper on Arc 140V GPU | JIT compilation of OpenCL/Level Zero SPIR-V to Xe2 SIMD machine code. | **Industry Solution Tested:** `core.set_property("GPU", {"CACHE_DIR": ...})`. | Persist Xe2 ISA binaries to disk cache; warm startup <280 ms. |
+| **NPU Dynamic Shape Rejection (`0x78000004`)** | Intel AI Boost NPU 4 | Fixed scratchpad SRAM and static DMA descriptors cannot handle unbounded dynamic shapes (`[-1, -1]`). | **`[LIMITATION MARKER: NPU Dynamic Shape Rejection 0x78000004]`** | Models must be reshaped statically offline (`model.reshape({...})`) or configured with static prompt bounds (`MAX_PROMPT_LEN`). |
+| **VCL ABI Driver-Coupling on `.blob` Files** | Cached `.blob` models in `.ov_cache` | Compiled `.blob` headers embed explicit OpenVINO build hashes (`ie_version`) and VCL compiler ABI versions (`NPU_DRIVER_VERSION = 1005540`). | **`[LIMITATION MARKER: VCL ABI Driver-Coupling Across Windows Update]`** | Windows Update driver changes invalidate cached blobs. Mitigation: Implement an automated post-update background precompilation service. |
+| **GenAI Sub-Graph Partitioning Overhead** | `openvino_genai.LLMPipeline`, `WhisperPipeline` | Autoregressive decode loop, KV eviction, and token sampling run on host CPU; tensor ops dispatch to NPU over UMA bus. | **`[LIMITATION MARKER: GenAI Sub-Graph Partitioning Overhead]`** | Per-token synchronization latency cannot be bypassed in split pipelines. Mitigation: Keep prefill on NPU, constrain response generation bounds. |
+| **OpenVINO CPU Plugin Pins to P-Cores by Default** | STT / TTS on Skymont LP-E Cores | oneTBB CPU plugin explicitly queries core topology and pins worker threads to P-cores unless overridden. | **Industry Solution Tested:** `SCHEDULING_CORE_TYPE = "ECORE_ONLY"` and `ENABLE_CPU_PINNING = True`. | Successfully verified: forces OpenVINO worker threads to LP-E cores (`C4..C7`), saving power and freeing P-cores. |
+| **Memory Bus Contention Under Tri-Engine Stress** | Arc 140V Decode + NPU Embeddings | 128-bit LPDDR5X-8533 shared bus saturates at ~136.5 GB/s theoretical bandwidth. | **`[LIMITATION MARKER: UMA_MEMORY_BANDWIDTH_136GBPS]`** | Quantize GPU KV cache (`-ctk q8_0 -ctv q8_0`), enable FlashAttention, stagger heavy NPU batch embeddings during active voice decode. |
+| **Shared Compute Aperture Cap (9,156 MB)** | Multi-Model Concurrency | Windows WDDM limits shared compute device memory allocation to ~57% of physical RAM. | **`[LIMITATION MARKER: DXCORE_MCDM_SHARED_APERTURE_9156MB]`** | Memory-gate model loading: do not host Gemma 4 E4B (5 GB) and Whisper Medium (1.5 GB) concurrently with full context. |
+| **Thermal / Power Throttling at Sustained 28W** | Tri-Engine Full Saturation | LattePanda Mu carrier board BIOS enforces strict PL1 ceiling of 28W. | **`[LIMITATION MARKER: CARRIER_PL1_POWER_28W]`** | Offload lightweight audio (STT/TTS) to Skymont LP-E cores (low-power island) to keep total package power within 15–22W. |
+
+---
+
+## 7. Hardware-Enforced Limitations (`[LIMITATION MARKER]`)
 
 The following physical and architectural boundaries are enforced by silicon and board design on the LattePanda Mu Ultra and **cannot be eliminated via software optimizations**:
 
@@ -254,7 +427,7 @@ The following physical and architectural boundaries are enforced by silicon and 
 
 ---
 
-## 6. Synthesis: Recommended Execution Configuration for Device Commander
+## 8. Synthesis: Recommended Execution Configuration for Device Commander
 
 | Component | Target Accelerator | Load & Cache Policy | Thread & QoS Configuration | Expected Latency |
 |:---|:---|:---|:---|:---:|
