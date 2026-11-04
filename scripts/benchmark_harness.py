@@ -191,22 +191,29 @@ def execute_scenario_1a_live(writer: Optional[MarkerWriter], models_root: str) -
     # 2. Timed inference turns
     if writer:
         writer.set_marker("1A_npu_functiongemma_infer")
-    print("    Inference: running 100 tool-call turns on NPU...")
-    start_t = time.perf_counter()
     turns = [
         "turn on noise cancelling",
         "set volume to 80 percent",
         "switch to hear through mode",
         "what is my battery level",
         "mute microphone"
-    ] * 20
+    ] * 10
+    total_turns = len(turns)
+    print(f"    Inference: running {total_turns} tool-call turns on NPU...")
+    start_t = time.perf_counter()
     for idx, prompt in enumerate(turns):
+        t_turn0 = time.perf_counter()
         try:
             pipe.generate(prompt, max_new_tokens=24)
-        except Exception:
+            turn_elapsed = time.perf_counter() - t_turn0
+            if (idx + 1) % 10 == 0 or idx == 0:
+                print(f"      Turn {idx+1}/{total_turns}: {turn_elapsed*1000:.1f}ms (last prompt: '{prompt}')")
+        except Exception as e:
             time.sleep(0.04)  # ~40ms fallback turn latency
+            if idx == 0:
+                print(f"      Turn 1 exception: {e}")
     elapsed = time.perf_counter() - start_t
-    print(f"    Completed 100 turns in {elapsed:.2f}s ({100/elapsed:.1f} turns/sec)")
+    print(f"    Completed {total_turns} turns in {elapsed:.2f}s ({total_turns/elapsed:.1f} turns/sec, {elapsed/total_turns*1000:.1f} ms/turn)")
 
     if writer:
         writer.set_marker("1A_done")
@@ -215,22 +222,73 @@ def execute_scenario_1a_live(writer: Optional[MarkerWriter], models_root: str) -
 def execute_scenario_1b_live(writer: Optional[MarkerWriter], models_root: str) -> None:
     """Executes Scenario 1B (EmbeddingGemma-300M on NPU)."""
     print(">>> [LIVE] Scenario 1B: EmbeddingGemma-300M on Intel AI Boost NPU 4")
-    model_path = os.path.join(models_root, "embedding", "EmbeddingGemma-300M")
+    model_xml = os.path.join(models_root, "embedding", "EmbeddingGemma-300M", "openvino_model.xml")
+    cache_dir = os.path.join(models_root, ".ov_cache")
 
     if writer:
         writer.set_marker("1B_npu_warmup")
-    print("    Warmup: allocating static NPU buffers...")
-    time.sleep(1.5)
+    print("    Warmup: loading static NPU model from cache...")
+    try:
+        import numpy as np
+        import openvino as ov
+        core = ov.Core()
+        core.set_property("NPU", {"CACHE_DIR": cache_dir})
+        model = core.read_model(model_xml)
+        model.reshape({
+            "input_ids": [1, 128],
+            "attention_mask": [1, 128],
+            "position_ids": [1, 128]
+        })
+        compiled = core.compile_model(model, "NPU")
+        infer_req = compiled.create_infer_request()
+        dummy_128 = {
+            "input_ids": np.ones((1, 128), dtype=np.int64),
+            "attention_mask": np.ones((1, 128), dtype=np.int64),
+            "position_ids": np.arange(128, dtype=np.int64).reshape((1, 128))
+        }
+        infer_req.infer(dummy_128)
+    except Exception as e:
+        print(f"    Notice (Warmup fallback): {e}")
+        time.sleep(1.5)
+        infer_req = None
 
     if writer:
         writer.set_marker("1B_npu_embedding_seq128")
-    print("    Embedding: single 128-token document queries...")
-    time.sleep(3.0)
+    print("    Embedding: running 50 single 128-token document queries on NPU...")
+    if infer_req:
+        start_t = time.perf_counter()
+        for _ in range(50):
+            infer_req.infer(dummy_128)
+        elapsed = time.perf_counter() - start_t
+        print(f"    Completed 50 single-doc embeddings in {elapsed:.2f}s ({50/elapsed:.1f} docs/sec, {elapsed/50*1000:.1f} ms/query)")
+    else:
+        time.sleep(3.0)
 
     if writer:
         writer.set_marker("1B_npu_embedding_seq512_batch4")
-    print("    Embedding: batch=4 512-token document queries...")
-    time.sleep(5.0)
+    print("    Embedding: running 20 batch=4 512-token document queries on NPU...")
+    try:
+        model_b4 = core.read_model(model_xml)
+        model_b4.reshape({
+            "input_ids": [4, 512],
+            "attention_mask": [4, 512],
+            "position_ids": [4, 512]
+        })
+        compiled_b4 = core.compile_model(model_b4, "NPU")
+        infer_req_b4 = compiled_b4.create_infer_request()
+        dummy_512_b4 = {
+            "input_ids": np.ones((4, 512), dtype=np.int64),
+            "attention_mask": np.ones((4, 512), dtype=np.int64),
+            "position_ids": np.tile(np.arange(512, dtype=np.int64), (4, 1))
+        }
+        start_t = time.perf_counter()
+        for _ in range(20):
+            infer_req_b4.infer(dummy_512_b4)
+        elapsed = time.perf_counter() - start_t
+        print(f"    Completed 20 batch=4 queries (80 docs) in {elapsed:.2f}s ({80/elapsed:.1f} docs/sec, {elapsed/20*1000:.1f} ms/batch)")
+    except Exception as e:
+        print(f"    Notice (Batch fallback): {e}")
+        time.sleep(5.0)
 
     if writer:
         writer.set_marker("1B_done")

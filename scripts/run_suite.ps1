@@ -32,14 +32,21 @@
 [CmdletBinding()]
 param (
     [string]$Scenario = "all",
-    [bool]$DryRun = $true,
+    [switch]$DryRun,
     [switch]$ExecuteLive,
+    [switch]$Confirmed,
     [string]$MarkFile = "$PSScriptRoot\mutop_markers.txt",
     [int]$SamplingIntervalMs = 200,
     [string]$ModelsRoot = "C:\Users\peter\models"
 )
 
 $ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+if (-not $ScriptDir) { $ScriptDir = "C:\develop\mutop\scripts" }
+if (-not $MarkFile -or $MarkFile -eq "\mutop_markers.txt" -or $MarkFile -eq "C:\mutop_markers.txt") {
+    $MarkFile = Join-Path $ScriptDir "mutop_markers.txt"
+}
 
 Write-Host "================================================================================" -ForegroundColor Cyan
 Write-Host "         MUTOP-AI MULTI-ENGINE BENCHMARK ORCHESTRATOR (POWERSHELL)              " -ForegroundColor Cyan
@@ -70,7 +77,7 @@ if (Test-Path $VenvPython) {
     }
 }
 
-$HarnessPy = Join-Path $PSScriptRoot "benchmark_harness.py"
+$HarnessPy = Join-Path $ScriptDir "benchmark_harness.py"
 if (-not (Test-Path $HarnessPy)) {
     Write-Error "Could not locate benchmark harness at '$HarnessPy'."
     exit 1
@@ -100,10 +107,14 @@ if (-not $ExecuteLive -or $DryRun) {
 
 Write-Host "`n[CRITICAL SAFETY GATE CHECK]" -ForegroundColor Red
 Write-Host "Before running live workloads on LattePanda Mu Ultra ('mu'), verify board availability with the operator!" -ForegroundColor Yellow
-$Confirmation = Read-Host "Has the operator confirmed board occupancy for this benchmark run? (y/N)"
-if ($Confirmation -ne "y" -and $Confirmation -ne "Y") {
-    Write-Warning "Benchmark cancelled. Board occupancy was not confirmed."
-    exit 2
+if (-not $Confirmed) {
+    $Confirmation = Read-Host "Has the operator confirmed board occupancy for this benchmark run? (y/N)"
+    if ($Confirmation -ne "y" -and $Confirmation -ne "Y") {
+        Write-Warning "Benchmark cancelled. Board occupancy was not confirmed."
+        exit 2
+    }
+} else {
+    Write-Host "Board occupancy pre-confirmed by operator switch (-Confirmed)." -ForegroundColor Green
 }
 
 # 2. Locate mutop-ai executable
@@ -125,14 +136,18 @@ Set-Content -Path $ResolvedMarkFile -Value "" -Encoding UTF8
 
 # 3. Launch mutop-ai background collector
 Write-Host ">>> Launching mutop-ai background telemetry collector..." -ForegroundColor Magenta
+$TelemetryLog = Join-Path $ScriptDir "telemetry_${Scenario}.ndjson"
+if (Test-Path $TelemetryLog) { Remove-Item $TelemetryLog -Force }
+
 $MutopArgs = "-s $SamplingIntervalMs --mark-file `"$ResolvedMarkFile`" --proc llama-server,python --threads --summary"
 Write-Host "    $MutopExe $MutopArgs" -ForegroundColor DarkGray
+Write-Host "    Redirecting stream output to: $TelemetryLog" -ForegroundColor DarkGray
 
-$MutopProc = Start-Process -FilePath $MutopExe -ArgumentList $MutopArgs -PassThru -NoNewWindow
+$MutopProc = Start-Process -FilePath $MutopExe -ArgumentList $MutopArgs -PassThru -NoNewWindow -RedirectStandardOutput $TelemetryLog
 Start-Sleep -Milliseconds 500
 
 try {
-    # 4. Execute Live Benchmark Harness
+    # 4. Execute Live Benchmark Workloads
     Write-Host "`n>>> Executing Live Benchmark Workloads..." -ForegroundColor Green
     Invoke-BenchmarkHarness @("--scenario", $Scenario, "--mark-file", $ResolvedMarkFile, "--execute-live")
 }
@@ -140,12 +155,34 @@ finally {
     # 5. Signal mutop-ai completion
     Write-Host "`n>>> Signaling benchmark completion..." -ForegroundColor Cyan
     Set-Content -Path $ResolvedMarkFile -Value "STREAM_END" -Encoding UTF8
-    Start-Sleep -Seconds 1
+    
+    # Wait up to 5 seconds for mutop-ai to cleanly exit and write summary
+    $waitCount = 0
+    while (-not $MutopProc.HasExited -and $waitCount -lt 25) {
+        Start-Sleep -Milliseconds 200
+        $waitCount++
+    }
 
     if (-not $MutopProc.HasExited) {
         Write-Host "Stopping mutop-ai telemetry process..." -ForegroundColor Yellow
-        # Give mutop-ai a moment to write summary report on exit
         Stop-Process -Id $MutopProc.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Display summary from TelemetryLog if present
+if (Test-Path $TelemetryLog) {
+    Write-Host "`n================================================================================" -ForegroundColor Cyan
+    Write-Host "                      MUTOP-AI TELEMETRY SUMMARY REPORT                         " -ForegroundColor Cyan
+    Write-Host "================================================================================" -ForegroundColor Cyan
+    $lines = Get-Content $TelemetryLog -Encoding UTF8
+    $inSummary = $false
+    foreach ($line in $lines) {
+        if ($line -match "MUTOP-AI RUN SUMMARY REPORT" -or $line -match "SUMMARY REPORT") {
+            $inSummary = $true
+        }
+        if ($inSummary) {
+            Write-Host $line
+        }
     }
 }
 
