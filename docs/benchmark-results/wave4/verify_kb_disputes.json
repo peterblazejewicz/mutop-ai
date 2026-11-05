@@ -1,0 +1,324 @@
+{
+  "timestamp": "2026-11-05 21:04:55",
+  "rapl_msr_limits": {
+    "msr_0x606_raw_hex": "0x00000000000A0E03",
+    "power_unit_w": 0.125,
+    "energy_unit_uJ": 61.0352,
+    "time_unit_ms": 0.9766,
+    "msr_0x610_raw_hex": "0x0000812800DD80F0",
+    "pl1_watts": 30.0,
+    "pl1_enabled": true,
+    "pl1_clamping": true,
+    "pl1_time_window_sec": 28.0,
+    "pl2_watts": 37.0,
+    "pl2_enabled": true,
+    "pl2_clamping": false,
+    "pl2_time_window_sec": 0.000977,
+    "pkg_power_limit_locked": false,
+    "msr_0x1a2_tjmax_c": 100
+  },
+  "memory_aperture": {
+    "os_total_visible_phys_bytes": 16844791808,
+    "os_total_visible_phys_mb": 16064.45,
+    "wddm_50pct_shared_limit_mb": 8032.22,
+    "mutop_snapshot_memory": {},
+    "mutop_snapshot_gpu": {},
+    "mutop_snapshot_npu": {},
+    "openvino_device_properties": {
+      "GPU": {
+        "FULL_DEVICE_NAME": "Intel(R) Arc(TM) 140V GPU (8GB) (iGPU)",
+        "DEVICE_ARCHITECTURE": "GPU: vendor=0x8086 arch=v20.4.4",
+        "GPU_DEVICE_TOTAL_MEM_SIZE": "8553578496",
+        "GPU_DEVICE_MAX_ALLOC_MEM_SIZE": "8553578496",
+        "GPU_UARCH_VERSION": "20.4.4",
+        "GPU_MEMORY_STATISTICS": "{'cl_mem': 0, 'unknown': 0, 'usm_device': 0, 'usm_host': 0, 'usm_shared': 0}"
+      },
+      "NPU": {
+        "FULL_DEVICE_NAME": "Intel(R) AI Boost",
+        "DEVICE_ARCHITECTURE": "4000",
+        "NPU_DEVICE_TOTAL_MEM_SIZE": "8589934592",
+        "NPU_COMPILER_VERSION": "524292",
+        "NPU_DEVICE_ALLOC_MEM_SIZE": "0",
+        "NPU_DISABLE_IDLE_MEMORY_PRUNING": "False",
+        "NPU_DRIVER_VERSION": "1005540"
+      }
+    }
+  },
+  "mutop_cpu_overhead": {
+    "stream_200ms_default": {
+      "wall_sec": 20.28,
+      "kernel_cpu_sec": 0.4062,
+      "user_cpu_sec": 0.0625,
+      "total_cpu_sec": 0.4688,
+      "system_cpu_overhead_pct_8cores": 0.289,
+      "single_core_equivalent_pct": 2.311
+    },
+    "stream_100ms_default": {
+      "wall_sec": 20.18,
+      "kernel_cpu_sec": 0.4688,
+      "user_cpu_sec": 0.3281,
+      "total_cpu_sec": 0.7969,
+      "system_cpu_overhead_pct_8cores": 0.494,
+      "single_core_equivalent_pct": 3.95
+    },
+    "stream_200ms_with_threads": {
+      "wall_sec": 20.16,
+      "kernel_cpu_sec": 0.9062,
+      "user_cpu_sec": 0.1406,
+      "total_cpu_sec": 1.0469,
+      "system_cpu_overhead_pct_8cores": 0.649,
+      "single_core_equivalent_pct": 5.194
+    },
+    "stream_100ms_with_threads": {
+      "wall_sec": 20.17,
+      "kernel_cpu_sec": 0.9844,
+      "user_cpu_sec": 0.3125,
+      "total_cpu_sec": 1.2969,
+      "system_cpu_overhead_pct_8cores": 0.804,
+      "single_core_equivalent_pct": 6.429
+    }
+  },
+  "whisper_cpu_pcore_vs_ecore_energy": {
+    "base": {
+      "PCORE_ONLY": {
+        "trials": 5,
+        "median_latency_ms": 672.6,
+        "rtf": 0.0224,
+        "median_energy_joules": 5.9,
+        "median_avg_pkg_power_w": 8.78,
+        "all_latencies_ms": [
+          727.7,
+          674.5,
+          672.6,
+          669.6,
+          663.6
+        ],
+        "all_energies_j": [
+          5.97,
+          5.93,
+          5.88,
+          5.88,
+          5.9
+        ],
+        "all_powers_w": [
+          8.21,
+          8.79,
+          8.74,
+          8.78,
+          8.89
+        ]
+      },
+      "ECORE_ONLY": {
+        "trials": 5,
+        "median_latency_ms": 894.9,
+        "rtf": 0.0298,
+        "median_energy_joules": 6.07,
+        "median_avg_pkg_power_w": 6.78,
+        "all_latencies_ms": [
+          993.3,
+          894.9,
+          925.5,
+          885.1,
+          879.8
+        ],
+        "all_energies_j": [
+          6.33,
+          6.07,
+          6.19,
+          6.03,
+          5.99
+        ],
+        "all_powers_w": [
+          6.37,
+          6.78,
+          6.69,
+          6.81,
+          6.81
+        ]
+      }
+    },
+    "small": {
+      "PCORE_ONLY": {
+        "trials": 3,
+        "median_latency_ms": 2333.3,
+        "rtf": 0.0778,
+        "median_energy_joules": 22.24,
+        "median_avg_pkg_power_w": 9.53,
+        "all_latencies_ms": [
+          2378.6,
+          2325.9,
+          2333.3
+        ],
+        "all_energies_j": [
+          22.23,
+          22.26,
+          22.24
+        ],
+        "all_powers_w": [
+          9.35,
+          9.57,
+          9.53
+        ]
+      },
+      "ECORE_ONLY": {
+        "trials": 3,
+        "median_latency_ms": 3421.2,
+        "rtf": 0.114,
+        "median_energy_joules": 23.44,
+        "median_avg_pkg_power_w": 6.85,
+        "all_latencies_ms": [
+          3453.4,
+          3340.6,
+          3421.2
+        ],
+        "all_energies_j": [
+          23.46,
+          23.07,
+          23.44
+        ],
+        "all_powers_w": [
+          6.79,
+          6.91,
+          6.85
+        ]
+      }
+    }
+  },
+  "whisper_gpu_turn1_vs_steady": {
+    "base": {
+      "init_ms": 1155.8,
+      "turn1_latency_ms": 884.6,
+      "turn1_rtf": 0.0295,
+      "turn1_energy_j": 4.11,
+      "turn1_power_w": 4.65,
+      "steady_median_latency_ms": 185.9,
+      "steady_rtf": 0.0062,
+      "steady_throughput_x_rt": 161.4,
+      "steady_median_energy_j": 1.28,
+      "steady_median_power_w": 6.91,
+      "turn1_lazy_specialization_overhead_ms": 698.7,
+      "steady_trials_ms": [
+        174.7,
+        189.3,
+        185.9
+      ]
+    },
+    "small": {
+      "init_ms": 2155.3,
+      "turn1_latency_ms": 838.6,
+      "turn1_rtf": 0.028,
+      "turn1_energy_j": 5.5,
+      "turn1_power_w": 6.56,
+      "steady_median_latency_ms": 206.7,
+      "steady_rtf": 0.0069,
+      "steady_throughput_x_rt": 145.1,
+      "steady_median_energy_j": 1.67,
+      "steady_median_power_w": 8.11,
+      "turn1_lazy_specialization_overhead_ms": 631.9,
+      "steady_trials_ms": [
+        211.5,
+        206.7,
+        181.1
+      ]
+    },
+    "medium": {
+      "init_ms": 16411.8,
+      "turn1_latency_ms": 1304.3,
+      "turn1_rtf": 0.0435,
+      "turn1_energy_j": 10.97,
+      "turn1_power_w": 8.41,
+      "steady_median_latency_ms": 381.9,
+      "steady_rtf": 0.0127,
+      "steady_throughput_x_rt": 78.5,
+      "steady_median_energy_j": 4.0,
+      "steady_median_power_w": 10.64,
+      "turn1_lazy_specialization_overhead_ms": 922.4,
+      "steady_trials_ms": [
+        407.8,
+        373.3,
+        381.9
+      ]
+    },
+    "large-v3-turbo": {
+      "init_ms": 2960.7,
+      "turn1_latency_ms": 1056.8,
+      "turn1_rtf": 0.0352,
+      "turn1_energy_j": 8.67,
+      "turn1_power_w": 8.21,
+      "steady_median_latency_ms": 408.2,
+      "steady_rtf": 0.0136,
+      "steady_throughput_x_rt": 73.5,
+      "steady_median_energy_j": 4.99,
+      "steady_median_power_w": 12.2,
+      "turn1_lazy_specialization_overhead_ms": 648.6,
+      "steady_trials_ms": [
+        408.2,
+        396.9,
+        416.0
+      ]
+    }
+  },
+  "llama_bench_vulkan_vs_sycl": {
+    "discovered_ggufs": {
+      "Gemma-4-E2B": "C:\\Users\\peter\\models\\slm\\gemma-4-E2B-it-Q4_K_M.gguf",
+      "Gemma-4-E4B": "C:\\Users\\peter\\models\\slm\\gemma-4-E4B-it-Q4_K_M.gguf",
+      "FunctionGemma-270M": "C:\\develop\\device-commander\\benchbin\\functiongemma-270m-it-q8_0.gguf"
+    },
+    "benchmarks": {
+      "Gemma-4-E2B": {
+        "vulkan": {
+          "pp128_tok_s": 636.0,
+          "pp512_tok_s": 1010.58,
+          "tg32_tok_s": 40.09,
+          "tg128_tok_s": 41.05,
+          "build_number": 11869,
+          "build_commit": "d327bf1f0"
+        },
+        "sycl": {
+          "pp128_tok_s": 435.59,
+          "pp512_tok_s": 602.03,
+          "tg32_tok_s": 43.73,
+          "tg128_tok_s": 43.49,
+          "build_number": 11869,
+          "build_commit": "d327bf1f0"
+        }
+      },
+      "Gemma-4-E4B": {
+        "vulkan": {
+          "pp128_tok_s": 501.13,
+          "pp512_tok_s": 578.5,
+          "tg32_tok_s": 26.66,
+          "tg128_tok_s": 26.76,
+          "build_number": 11869,
+          "build_commit": "d327bf1f0"
+        },
+        "sycl": {
+          "pp128_tok_s": 218.82,
+          "pp512_tok_s": 296.01,
+          "tg32_tok_s": 26.38,
+          "tg128_tok_s": 26.24,
+          "build_number": 11869,
+          "build_commit": "d327bf1f0"
+        }
+      },
+      "FunctionGemma-270M": {
+        "vulkan": {
+          "pp128_tok_s": 5719.79,
+          "pp512_tok_s": 6065.13,
+          "tg32_tok_s": 182.13,
+          "tg128_tok_s": 176.86,
+          "build_number": 11869,
+          "build_commit": "d327bf1f0"
+        },
+        "sycl": {
+          "pp128_tok_s": 4337.58,
+          "pp512_tok_s": 6608.49,
+          "tg32_tok_s": 154.98,
+          "tg128_tok_s": 159.57,
+          "build_number": 11869,
+          "build_commit": "d327bf1f0"
+        }
+      }
+    }
+  }
+}
