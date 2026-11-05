@@ -309,7 +309,7 @@ Persistent `.blob` caching serializes the fully compiled VCL neural tile binary 
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **`EmbeddingGemma-300M`** | NPU | **26.55 s** | **748.83 ms** | **35.5×** | 94.18 ms | **14.10 ms** | 584.04 MB |
 | **`FunctionGemma-270M-INT8`** | NPU | **20.84 s** | **2,086.74 ms** | **10.0×** | 891.23 ms | **368.41 ms** | 593.93 MB |
-| **`Whisper Base`** | NPU | **33.03 s** | **5,516.05 ms** | **6.0×** | 237.34 ms | **166.37 ms** | 303.50 MB |
+| **`Whisper Base`** | NPU | **33.03 s** | **5,516.05 ms** | **6.0×** | 237.34 ms | **1,663.70 ms (175.8 ms Wave 2 steady)** | 303.50 MB |
 | **`Whisper Small`** | NPU | **91.51 s** | **11,423.85 ms** | **8.0×** | 374.45 ms | **217.97 ms** | 598.60 MB |
 | **`Whisper Large-v3-Turbo`** | NPU | **385.40 s** (6.4 min) | **8,880.47 ms** (8.88 s) | **43.4×** | 1,256.61 ms | **417.05 ms** | 885.20 MB |
 
