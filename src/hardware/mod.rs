@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use cpu::{collect_cpu_snapshot, CpuCollectorState};
 pub use diagnostics::evaluate_diagnostics;
 pub use facts::get_host_info;
-pub use gpu::collect_gpu_snapshot;
+pub use gpu::{collect_gpu_snapshot, resolve_gpu_power_w};
 pub use memory::collect_memory_snapshot;
 pub use network::{collect_network_snapshot, NetworkCollectorState};
 pub use npu::collect_npu_snapshot;
@@ -187,8 +187,12 @@ impl HardwareCollector {
         if gpu.temperature_c.is_some() {
             power_thermals.gpu_c = gpu.temperature_c;
         }
-        if gpu.power_w.is_none() && power_thermals.gpu_pp1_w > 0.0 {
-            gpu.power_w = Some(power_thermals.gpu_pp1_w as f32);
+        if gpu.power_w.is_none() {
+            if let Some(mw) = self.pdh_state.as_ref().and_then(|p| p.read_double("rapl_pp1")) {
+                gpu.power_w = resolve_gpu_power_w(None, Some(mw));
+            } else if self.pdh_state.is_none() && power_thermals.gpu_pp1_w > 0.0 {
+                gpu.power_w = Some(power_thermals.gpu_pp1_w as f32);
+            }
         }
 
         power_thermals.thermal_status = crate::hardware::power::determine_thermal_status(

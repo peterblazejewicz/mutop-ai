@@ -202,16 +202,24 @@ fn collect_windows_power_thermal(
 
     if let Some(pdh) = pdh_state {
         if let Some(mw) = pdh.read_double("rapl_pkg") {
-            package_w = mw / 1000.0;
+            if mw >= 0.0 && mw.is_finite() {
+                package_w = mw / 1000.0;
+            }
         }
         if let Some(mw) = pdh.read_double("rapl_pp0") {
-            core_pp0_w = mw / 1000.0;
+            if mw >= 0.0 && mw.is_finite() {
+                core_pp0_w = mw / 1000.0;
+            }
         }
         if let Some(mw) = pdh.read_double("rapl_pp1") {
-            gpu_pp1_w = mw / 1000.0;
+            if mw >= 0.0 && mw.is_finite() {
+                gpu_pp1_w = mw / 1000.0;
+            }
         }
         if let Some(mw) = pdh.read_double("rapl_dram") {
-            dram_w = mw / 1000.0;
+            if mw >= 0.0 && mw.is_finite() {
+                dram_w = mw / 1000.0;
+            }
         }
 
         let thermal_items = pdh.read_array("thermals");

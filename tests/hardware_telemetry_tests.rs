@@ -380,7 +380,7 @@ fn test_thermal_status_unprivileged_and_elevated_scenarios() {
 #[test]
 fn test_print_schema_and_version() {
     use mutop_ai::{print_schema, version};
-    assert_eq!(version(), "0.1.2");
+    assert_eq!(version(), "0.1.3");
     // Verify print_schema runs cleanly
     print_schema();
 }
@@ -487,4 +487,28 @@ fn test_gpu_rc6_idle_limiter_suppression_and_active_throttling() {
         "GPU temp_limited = true must always trigger throttling regardless of load"
     );
     assert_eq!(diag_thermal.status, DiagnosticStatus::Degraded);
+}
+
+#[test]
+fn test_gpu_power_resolution_no_flicker() {
+    use mutop_ai::hardware::gpu::resolve_gpu_power_w;
+
+    // Idle RC6 state on Lunar Lake validly reports 0.0 mW; must resolve to Some(0.0) W
+    assert_eq!(resolve_gpu_power_w(None, Some(0.0)), Some(0.0));
+
+    // Active power in milliwatts converts to watts (e.g. 1.82 mW -> 0.00182 W)
+    let pwr = resolve_gpu_power_w(None, Some(1.82)).expect("expected power");
+    assert!((pwr - 0.00182).abs() < 1e-6);
+
+    // Genuinely missing PDH counter returns None
+    assert_eq!(resolve_gpu_power_w(None, None), None);
+
+    // IGCL direct reading takes precedence if available
+    assert_eq!(resolve_gpu_power_w(Some(4.5), Some(0.0)), Some(4.5));
+    assert_eq!(resolve_gpu_power_w(Some(5.2), Some(1.82)), Some(5.2));
+
+    // Non-finite or negative values are safely rejected as None
+    assert_eq!(resolve_gpu_power_w(None, Some(-1.0)), None);
+    assert_eq!(resolve_gpu_power_w(None, Some(f64::NAN)), None);
+    assert_eq!(resolve_gpu_power_w(None, Some(f64::INFINITY)), None);
 }

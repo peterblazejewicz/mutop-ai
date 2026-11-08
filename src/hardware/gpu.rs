@@ -27,6 +27,25 @@ pub fn collect_gpu_snapshot(
     }
 }
 
+/// Resolves GPU power in Watts from either direct IGCL telemetry or RAPL PP1 energy counter.
+///
+/// On Intel Lunar Lake Xe2-LPG iGPU, IGCL may not report direct GPU telemetry power,
+/// and the Windows PDH RAPL PP1 counter (`\Energy Meter(RAPL_Package0_PP1)\Power`) returns valid
+/// 0.0 mW readings when the GPU is parked in RC6 idle sleep state.
+pub fn resolve_gpu_power_w(igcl_power_w: Option<f32>, rapl_pp1_mw: Option<f64>) -> Option<f32> {
+    if let Some(w) = igcl_power_w {
+        Some(w)
+    } else if let Some(mw) = rapl_pp1_mw {
+        if mw >= 0.0 && mw.is_finite() {
+            Some((mw / 1000.0) as f32)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 fn mock_gpu_snapshot() -> IntelArcGpuSnapshot {
     IntelArcGpuSnapshot {
         name: "Intel(R) Arc(TM) 140V GPU".to_string(),
@@ -180,12 +199,13 @@ fn collect_windows_gpu(
     let total_utilization_pct = render_3d_pct + compute_pct + copy_pct + video_decode_pct;
     let igcl_telemetry = try_read_igcl();
     let gpu_active = total_utilization_pct >= 5.0;
+    let pdh_pp1_mw = pdh_state.and_then(|p| p.read_double("rapl_pp1"));
 
     let (clock_mhz, temperature_c, power_w, throttling) = match igcl_telemetry {
         Some(t) => (
             t.clock_mhz,
             t.temp_c,
-            t.power_w,
+            resolve_gpu_power_w(t.power_w, pdh_pp1_mw),
             GpuThrottlingFlags {
                 // On Lunar Lake Xe2-LPG, IGCL asserts power/current/voltage limit bits
                 // when the GPU is parked in RC6 idle state; only report non-thermal
@@ -196,7 +216,12 @@ fn collect_windows_gpu(
                 voltage_limited: gpu_active && t.throttling.voltage_limited,
             },
         ),
-        None => (0, None, None, GpuThrottlingFlags::default()),
+        None => (
+            0,
+            None,
+            resolve_gpu_power_w(None, pdh_pp1_mw),
+            GpuThrottlingFlags::default(),
+        ),
     };
 
     IntelArcGpuSnapshot {
@@ -405,6 +430,28 @@ fn collect_linux_gpu() -> IntelArcGpuSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resolve_gpu_power_w() {
+        // Idle RC6 returns Some(0.0) mW -> must resolve to Some(0.0) W and NOT None
+        assert_eq!(resolve_gpu_power_w(None, Some(0.0)), Some(0.0));
+
+        // Active reading in mW -> converted to W (e.g. 1.82 mW -> 0.00182 W)
+        let pwr = resolve_gpu_power_w(None, Some(1.82)).expect("expected power");
+        assert!((pwr - 0.00182).abs() < 1e-6);
+
+        // PDH counter completely unavailable -> None
+        assert_eq!(resolve_gpu_power_w(None, None), None);
+
+        // IGCL telemetry direct power takes precedence even if RAPL is 0.0
+        assert_eq!(resolve_gpu_power_w(Some(4.5), Some(0.0)), Some(4.5));
+
+        // Invalid or negative RAPL values return None
+        assert_eq!(resolve_gpu_power_w(None, Some(-0.5)), None);
+        assert_eq!(resolve_gpu_power_w(None, Some(f64::NAN)), None);
+        assert_eq!(resolve_gpu_power_w(None, Some(f64::INFINITY)), None);
+        assert_eq!(resolve_gpu_power_w(None, Some(f64::NEG_INFINITY)), None);
+    }
 
     #[cfg(windows)]
     #[test]
