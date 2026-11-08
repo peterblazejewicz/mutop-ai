@@ -137,7 +137,8 @@ pub fn get_schema_json() -> &'static str {
         "nvme_nand_c": { "type": ["number", "null"] },
         "cpu_package_dts_c": { "type": ["number", "null"] },
         "cpu_core_dts_c": { "type": ["array", "null"] },
-        "cpu_fan_rpm": { "type": ["integer", "null"] }
+        "cpu_fan_rpm": { "type": ["integer", "null"] },
+        "thermal_status": { "type": ["string", "null"] }
       },
       "required": ["package_w", "core_pp0_w", "gpu_pp1_w", "dram_w", "power_above_idle_w", "idle_baseline_w", "ac_online", "battery_present", "effective_power_mode"]
     },

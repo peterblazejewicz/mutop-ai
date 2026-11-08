@@ -296,11 +296,12 @@ fn test_individual_collectors() {
 fn test_acpi_dummy_temperature_filtering() {
     use mutop_ai::hardware::power::parse_acpi_thermal_reading;
 
-    // Firmwares on carrier boards without EC (e.g. LattePanda Mu Ultra DFR1293)
-    // report dummy constants 0x0BB8 (3000) or 3010 tenths of Kelvin (~26.85°C / ~27.85°C)
-    assert!(parse_acpi_thermal_reading(3000.0).is_none());
-    assert!(parse_acpi_thermal_reading(3010.0).is_none());
-    assert!(parse_acpi_thermal_reading(3005.0).is_none());
+    // Firmwares on LattePanda Mu Ultra (SBCLNLCXR120-A):
+    // 0x0BB8 (3000 tenths of K = 26.85°C) in SSDH\Ther_Rvp _TMP when ETMD == 0
+    // 0x0BC2 (3010 tenths of K = 27.85°C) in DSDT MXTP when H_EC is absent
+    assert_eq!(parse_acpi_thermal_reading(3000.0), None);
+    assert_eq!(parse_acpi_thermal_reading(3010.0), None);
+    assert_eq!(parse_acpi_thermal_reading(3005.0), None);
 
     // Legitimate readings (e.g. 45°C = 318.15 K = 3181.5 tenths of K)
     assert!(parse_acpi_thermal_reading(3181.5).is_some());
@@ -308,8 +309,72 @@ fn test_acpi_dummy_temperature_filtering() {
     assert!((temp - 45.0).abs() < 0.1);
 
     // Out of realistic hardware range
-    assert!(parse_acpi_thermal_reading(2000.0).is_none()); // -73°C
-    assert!(parse_acpi_thermal_reading(4500.0).is_none()); // 176°C
+    assert_eq!(parse_acpi_thermal_reading(2000.0), None); // -73°C
+    assert_eq!(parse_acpi_thermal_reading(4500.0), None); // 176°C
+}
+
+#[test]
+fn test_thermal_status_unprivileged_and_elevated_scenarios() {
+    use mutop_ai::hardware::power::determine_thermal_status;
+    use mutop_ai::snapshot::types::PrivilegeTier;
+
+    // Scenario 1: Unprivileged session (m6b9-e2b Limited token) where DTS and SMART are blocked
+    let unpriv_status = determine_thermal_status(
+        PrivilegeTier::Tier1Unprivileged,
+        None, // PawnIO blocked by DACL
+        None, // ACPI dummy constant filtered
+        None, // IGCL temperature unpopulated on Lunar Lake
+        None, // NVMe SMART CreateFileW blocked
+    );
+    assert_eq!(
+        unpriv_status.as_deref(),
+        Some("temperature not available (not elevated)")
+    );
+
+    // Scenario 2: Elevated session where sensors are missing or inactive
+    let elev_no_sensors = determine_thermal_status(
+        PrivilegeTier::Tier2ElevatedAdmin,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        elev_no_sensors.as_deref(),
+        Some("temperature not available (no active thermal sensors)")
+    );
+
+    // Scenario 3: Elevated session with live sensors
+    let elev_live = determine_thermal_status(
+        PrivilegeTier::Tier2ElevatedAdmin,
+        Some(51.0),
+        None,
+        None,
+        Some(32.0),
+    );
+    assert_eq!(elev_live, None);
+
+    // Scenario 4: JSON serialization verifies skip_serializing_if when None vs present
+    let mut collector = HardwareCollector::new_mock();
+    let snapshot = collector.collect_snapshot(None, &[], false);
+    let json_live = serde_json::to_string(&snapshot).unwrap();
+    assert!(!json_live.contains("thermal_status"));
+
+    let mut unpriv_snap = snapshot.clone();
+    unpriv_snap.host.privilege_tier = PrivilegeTier::Tier1Unprivileged;
+    unpriv_snap.power_thermals.cpu_package_dts_c = None;
+    unpriv_snap.power_thermals.acpi_thermal_zone_c = None;
+    unpriv_snap.power_thermals.gpu_c = None;
+    unpriv_snap.power_thermals.nvme_composite_c = None;
+    unpriv_snap.power_thermals.thermal_status = determine_thermal_status(
+        unpriv_snap.host.privilege_tier,
+        unpriv_snap.power_thermals.cpu_package_dts_c,
+        unpriv_snap.power_thermals.acpi_thermal_zone_c,
+        unpriv_snap.power_thermals.gpu_c,
+        unpriv_snap.power_thermals.nvme_composite_c,
+    );
+    let json_unpriv = serde_json::to_string(&unpriv_snap).unwrap();
+    assert!(json_unpriv.contains(r#""thermal_status":"temperature not available (not elevated)""#));
 }
 
 #[test]

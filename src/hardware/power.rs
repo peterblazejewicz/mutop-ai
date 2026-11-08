@@ -9,16 +9,56 @@ use std::time::Instant;
 
 /// Parses raw tenths-of-Kelvin temperature reading from ACPI thermal zone counter.
 ///
-/// Filters out known firmware dummy constants (`3000` or `3010` tenths of Kelvin,
-/// which correspond to hardcoded 26.85°C / 27.85°C in ACPI DSDT/SSDT when no EC is present,
-/// e.g. LattePanda Mu Ultra `DFR1293` with `ETMD == 0`).
+/// Filters out known firmware dummy constants on LattePanda Mu (`SBCLNLCXR120-A`):
+/// - `DSDT` `\_SB.PC00.LPCB.MXTP` returns `0x0BC2` (`3010` tenths of Kelvin = `301.0 K` = `27.85 °C`,
+///   which rounds to `28 °C` in integer display) when the `DFR1293` carrier lacks an ACPI Embedded
+///   Controller (`H_EC.DUMY`).
+/// - `SSDH\Ther_Rvp` `\_TZ.TZ00._TMP` initializes `PTMP` / fallback to `0x0BB8` (`3000` tenths of Kelvin
+///   = `300.0 K` = `26.85 °C`) when `ETMD == 0`.
+///
+/// Catches both constants in `(2999.5..=3010.5)` tenths of Kelvin and `(26.5..=28.5)` °C.
 pub fn parse_acpi_thermal_reading(raw_k_tenths: f64) -> Option<f32> {
     if (2999.5..=3010.5).contains(&raw_k_tenths) {
         return None;
     }
     let c = (raw_k_tenths / 10.0) - 273.15;
+    if (26.5..=28.5).contains(&c) {
+        return None;
+    }
     if (0.0..=120.0).contains(&c) {
         Some(c as f32)
+    } else {
+        None
+    }
+}
+
+/// Computes the optional `thermal_status` diagnostic string based on privilege tier and available sensors.
+pub fn determine_thermal_status(
+    privilege_tier: crate::snapshot::types::PrivilegeTier,
+    cpu_package_dts_c: Option<f32>,
+    acpi_thermal_zone_c: Option<f32>,
+    gpu_c: Option<f32>,
+    nvme_composite_c: Option<f32>,
+) -> Option<String> {
+    use crate::snapshot::types::PrivilegeTier;
+
+    let all_none = cpu_package_dts_c.is_none()
+        && acpi_thermal_zone_c.is_none()
+        && gpu_c.is_none()
+        && nvme_composite_c.is_none();
+
+    if all_none {
+        if privilege_tier == PrivilegeTier::Tier1Unprivileged {
+            Some("temperature not available (not elevated)".to_string())
+        } else {
+            Some("temperature not available (no active thermal sensors)".to_string())
+        }
+    } else if privilege_tier == PrivilegeTier::Tier1Unprivileged
+        && cpu_package_dts_c.is_none()
+        && acpi_thermal_zone_c.is_none()
+        && nvme_composite_c.is_none()
+    {
+        Some("temperature not available (not elevated)".to_string())
     } else {
         None
     }
@@ -82,6 +122,7 @@ fn mock_power_thermal_snapshot(idle_baseline_w: f64) -> PowerThermalSnapshot {
         cpu_package_dts_c: Some(48.5),
         cpu_core_dts_c: Some(vec![48.0, 49.0, 47.5, 48.2, 44.0, 43.5, 44.2, 43.8]),
         cpu_fan_rpm: Some(2400),
+        thermal_status: None,
     }
 }
 
@@ -232,6 +273,7 @@ fn collect_windows_power_thermal(
         cpu_package_dts_c,
         cpu_core_dts_c: None,
         cpu_fan_rpm,
+        thermal_status: None,
     }
 }
 
@@ -283,10 +325,13 @@ fn collect_linux_power_thermal(idle_baseline_w: f64) -> PowerThermalSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::snapshot::types::PrivilegeTier;
 
     #[test]
     fn test_parse_acpi_thermal_reading_filters_dummy_constants() {
-        // Known ACPI dummy constants on LattePanda Mu Ultra (0x0BB8 / 3000 and 3010 tenths of K)
+        // Known ACPI dummy constants on LattePanda Mu Ultra (SBCLNLCXR120-A):
+        // 0x0BB8 (3000 tenths of K = 26.85°C) in SSDH\Ther_Rvp and
+        // 0x0BC2 (3010 tenths of K = 27.85°C) in DSDT MXTP
         assert_eq!(parse_acpi_thermal_reading(3000.0), None);
         assert_eq!(parse_acpi_thermal_reading(3010.0), None);
         assert_eq!(parse_acpi_thermal_reading(3005.0), None);
@@ -300,5 +345,56 @@ mod tests {
         // Out of range (< 0°C or > 120°C)
         assert_eq!(parse_acpi_thermal_reading(2000.0), None); // -73°C
         assert_eq!(parse_acpi_thermal_reading(4500.0), None); // 176°C
+    }
+
+    #[test]
+    fn test_determine_thermal_status() {
+        // Unprivileged with all temps None -> "temperature not available (not elevated)"
+        assert_eq!(
+            determine_thermal_status(PrivilegeTier::Tier1Unprivileged, None, None, None, None),
+            Some("temperature not available (not elevated)".to_string())
+        );
+
+        // Elevated with all temps None -> "temperature not available (no active thermal sensors)"
+        assert_eq!(
+            determine_thermal_status(PrivilegeTier::Tier2ElevatedAdmin, None, None, None, None),
+            Some("temperature not available (no active thermal sensors)".to_string())
+        );
+
+        // Elevated with CPU DTS present -> None
+        assert_eq!(
+            determine_thermal_status(
+                PrivilegeTier::Tier2ElevatedAdmin,
+                Some(51.0),
+                None,
+                None,
+                Some(32.0)
+            ),
+            None
+        );
+
+        // Unprivileged where CPU, ACPI, NVMe are None but somehow GPU temp was set -> still not elevated
+        assert_eq!(
+            determine_thermal_status(
+                PrivilegeTier::Tier1Unprivileged,
+                None,
+                None,
+                Some(44.0),
+                None
+            ),
+            Some("temperature not available (not elevated)".to_string())
+        );
+
+        // Elevated with only NVMe SMART temp -> None
+        assert_eq!(
+            determine_thermal_status(
+                PrivilegeTier::Tier2ElevatedAdmin,
+                None,
+                None,
+                None,
+                Some(35.0)
+            ),
+            None
+        );
     }
 }

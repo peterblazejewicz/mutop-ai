@@ -179,9 +179,23 @@ fn collect_windows_gpu(
 
     let total_utilization_pct = render_3d_pct + compute_pct + copy_pct + video_decode_pct;
     let igcl_telemetry = try_read_igcl();
+    let gpu_active = total_utilization_pct >= 5.0;
 
     let (clock_mhz, temperature_c, power_w, throttling) = match igcl_telemetry {
-        Some(t) => (t.clock_mhz, t.temp_c, t.power_w, t.throttling),
+        Some(t) => (
+            t.clock_mhz,
+            t.temp_c,
+            t.power_w,
+            GpuThrottlingFlags {
+                // On Lunar Lake Xe2-LPG, IGCL asserts power/current/voltage limit bits
+                // when the GPU is parked in RC6 idle state; only report non-thermal
+                // limiters when the GPU engines are actively utilized.
+                power_limited: gpu_active && t.throttling.power_limited,
+                temp_limited: t.throttling.temp_limited,
+                current_limited: gpu_active && t.throttling.current_limited,
+                voltage_limited: gpu_active && t.throttling.voltage_limited,
+            },
+        ),
         None => (0, None, None, GpuThrottlingFlags::default()),
     };
 
@@ -229,28 +243,46 @@ struct IgclTelemetry {
 struct CtlInitArgs {
     size: u32,
     version: u8,
-    zero_version: u8,
+    reserved: [u8; 3],
+    app_version: u32,
     flags: u32,
     supported_version: u32,
-    app_version: *const std::ffi::c_char,
+    application_uid: [u8; 16],
 }
 
 #[cfg(windows)]
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
+struct CtlOcTelemetryItem {
+    b_supported: u8,
+    reserved1: [u8; 3],
+    units: u32,
+    value_type: u32,
+    reserved2: u32,
+    value_f64: f64,
+}
+
+#[cfg(windows)]
+#[repr(C)]
 struct CtlPowerTelemetry {
     size: u32,
     version: u8,
-    supported: u8,
-    timestamp: u64,
-    gpu_energy_counter: f64,
-    gpu_voltage: f64,
-    gpu_current_limited: u8,
-    gpu_temperature_limited: u8,
+    reserved: [u8; 3],
+    time_stamp: CtlOcTelemetryItem,
+    gpu_energy_counter: CtlOcTelemetryItem,
+    gpu_voltage: CtlOcTelemetryItem,
+    gpu_current_clock_frequency: CtlOcTelemetryItem,
+    gpu_current_temperature: CtlOcTelemetryItem,
+    global_activity_counter: CtlOcTelemetryItem,
+    render_compute_activity_counter: CtlOcTelemetryItem,
+    media_activity_counter: CtlOcTelemetryItem,
     gpu_power_limited: u8,
+    gpu_temperature_limited: u8,
+    gpu_current_limited: u8,
     gpu_voltage_limited: u8,
-    gpu_current_temperature: f64,
-    gpu_current_clock_frequency: f64,
+    gpu_utilization_limited: u8,
+    reserved_flags: [u8; 3],
+    payload_tail: [u8; 232],
 }
 
 #[cfg(windows)]
@@ -296,9 +328,15 @@ fn try_read_igcl() -> Option<IgclTelemetry> {
     let igcl = igcl.as_ref()?;
 
     unsafe {
-        let mut args: CtlInitArgs = std::mem::zeroed();
-        args.size = std::mem::size_of::<CtlInitArgs>() as u32;
-        args.supported_version = 1;
+        let mut args = CtlInitArgs {
+            size: std::mem::size_of::<CtlInitArgs>() as u32,
+            version: 0,
+            reserved: [0; 3],
+            app_version: 0x0001_0000,
+            flags: 0,
+            supported_version: 0,
+            application_uid: [0; 16],
+        };
 
         let mut api_handle: *mut std::ffi::c_void = std::ptr::null_mut();
         if (igcl.ctl_init)(&mut args, &mut api_handle) != 0 || api_handle.is_null() {
@@ -320,14 +358,23 @@ fn try_read_igcl() -> Option<IgclTelemetry> {
 
         let mut telem: CtlPowerTelemetry = std::mem::zeroed();
         telem.size = std::mem::size_of::<CtlPowerTelemetry>() as u32;
+        telem.version = 0;
 
         let status = (igcl.ctl_telemetry)(device_handles[0], &mut telem);
         (igcl.ctl_close)(api_handle);
 
         if status == 0 {
-            let clock_mhz = telem.gpu_current_clock_frequency as u32;
-            let temp_c = if telem.gpu_current_temperature > 0.0 {
-                Some(telem.gpu_current_temperature as f32)
+            let clock_mhz = if telem.gpu_current_clock_frequency.b_supported != 0
+                && telem.gpu_current_clock_frequency.value_f64 > 0.0
+            {
+                telem.gpu_current_clock_frequency.value_f64 as u32
+            } else {
+                0
+            };
+            let temp_c = if telem.gpu_current_temperature.b_supported != 0
+                && telem.gpu_current_temperature.value_f64 > 0.0
+            {
+                Some(telem.gpu_current_temperature.value_f64 as f32)
             } else {
                 None
             };
@@ -353,4 +400,55 @@ fn try_read_igcl() -> Option<IgclTelemetry> {
 #[cfg(not(windows))]
 fn collect_linux_gpu() -> IntelArcGpuSnapshot {
     mock_gpu_snapshot()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn test_igcl_struct_sizes_and_offsets() {
+        assert_eq!(std::mem::size_of::<CtlInitArgs>(), 36);
+        assert_eq!(std::mem::size_of::<CtlOcTelemetryItem>(), 24);
+        assert_eq!(std::mem::size_of::<CtlPowerTelemetry>(), 440);
+
+        let telem: CtlPowerTelemetry = unsafe { std::mem::zeroed() };
+        let base = &telem as *const _ as usize;
+        assert_eq!(&telem.time_stamp as *const _ as usize - base, 8);
+        assert_eq!(&telem.gpu_energy_counter as *const _ as usize - base, 32);
+        assert_eq!(&telem.gpu_voltage as *const _ as usize - base, 56);
+        assert_eq!(
+            &telem.gpu_current_clock_frequency as *const _ as usize - base,
+            80
+        );
+        assert_eq!(
+            &telem.gpu_current_temperature as *const _ as usize - base,
+            104
+        );
+        assert_eq!(
+            &telem.global_activity_counter as *const _ as usize - base,
+            128
+        );
+        assert_eq!(
+            &telem.render_compute_activity_counter as *const _ as usize - base,
+            152
+        );
+        assert_eq!(
+            &telem.media_activity_counter as *const _ as usize - base,
+            176
+        );
+        assert_eq!(&telem.gpu_power_limited as *const _ as usize - base, 200);
+        assert_eq!(
+            &telem.gpu_temperature_limited as *const _ as usize - base,
+            201
+        );
+        assert_eq!(&telem.gpu_current_limited as *const _ as usize - base, 202);
+        assert_eq!(&telem.gpu_voltage_limited as *const _ as usize - base, 203);
+        assert_eq!(
+            &telem.gpu_utilization_limited as *const _ as usize - base,
+            204
+        );
+        assert_eq!(&telem.payload_tail as *const _ as usize - base, 208);
+    }
 }

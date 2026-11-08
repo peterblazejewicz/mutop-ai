@@ -523,7 +523,17 @@ impl EdgePlatform for MutopPlatform {
             .cpu_package_dts_c
             .or(snapshot.power_thermals.acpi_thermal_zone_c)
             .map(|t| format!("{:.1}C", t))
-            .unwrap_or_else(|| "-".to_string());
+            .unwrap_or_else(|| {
+                if snapshot.host.privilege_tier
+                    == crate::snapshot::types::PrivilegeTier::Tier1Unprivileged
+                {
+                    "n/a (not elevated)".to_string()
+                } else if let Some(ref status) = snapshot.power_thermals.thermal_status {
+                    format!("n/a ({})", status)
+                } else {
+                    "-".to_string()
+                }
+            });
         let gpu_temp_str = snapshot
             .power_thermals
             .gpu_c

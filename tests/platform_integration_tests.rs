@@ -121,12 +121,22 @@ fn test_mutop_platform_oneshot_format() {
     assert!(oneshot.contains("Thermals: CPU: 48.5C | GPU: 44.0C | NVMe: 41.0C | Fan: 2400 RPM"));
 
     // Fallback when CPU package DTS & ACPI thermal zone are None and Fan is None
+    // Tier 1: Unprivileged explicitly displays "n/a (not elevated)"
     let mut fallback_snap = snapshot.clone();
+    fallback_snap.host.privilege_tier =
+        mutop_ai::snapshot::types::PrivilegeTier::Tier1Unprivileged;
     fallback_snap.power_thermals.cpu_package_dts_c = None;
     fallback_snap.power_thermals.acpi_thermal_zone_c = None;
     fallback_snap.power_thermals.cpu_fan_rpm = None;
     let fallback_oneshot = platform.format_oneshot(&fallback_snap);
-    assert!(fallback_oneshot.contains("Thermals: CPU: - | GPU: 44.0C | NVMe: 41.0C | Fan: Auto"));
+    assert!(fallback_oneshot.contains("Thermals: CPU: n/a (not elevated) | GPU: 44.0C | NVMe: 41.0C | Fan: Auto"));
+
+    // Tier 2: Elevated when sensors absent displays "-"
+    let mut elevated_fallback = fallback_snap.clone();
+    elevated_fallback.host.privilege_tier =
+        mutop_ai::snapshot::types::PrivilegeTier::Tier2ElevatedAdmin;
+    let elevated_oneshot = platform.format_oneshot(&elevated_fallback);
+    assert!(elevated_oneshot.contains("Thermals: CPU: - | GPU: 44.0C | NVMe: 41.0C | Fan: Auto"));
 }
 
 #[test]

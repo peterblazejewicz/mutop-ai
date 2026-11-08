@@ -16,14 +16,18 @@ Hardware telemetry and AI monitor for the **LattePanda Mu Ultra** (DFR1295 compu
 |:-----|:--------------------|:------------------------------|:---------------------|
 | **Tier 1: Unprivileged** | Normal user process | `NtQuerySystemInformation`, DXCore / DXGI adapter enumeration, PDH engine & disk counters, `GetIfTable2`, `wlanapi.dll`, TCP extended tables, `NtQueryTimerResolution` | Baseline operation; higher-tier fields return `None` |
 | **Tier 2: Elevated Admin** | Run as Administrator (`SeDebugPrivilege`) | Storage IOCTLs (`IOCTL_STORAGE_QUERY_PROPERTY` NVMe SMART Health Log `0x02`, PCIe link negotiation), elevated thread query | Link degradation flags and SMART temps omitted if unprivileged |
-| **Tier 3: Signed Driver (Optional)** | Microsoft WHQL-Signed PawnIO Driver (`winget install namazso.PawnIO`) | Direct CPU Package/Core DTS temperatures via MSR `0x1B1`, Carrier Fan RPM (`CPU_FAN` header on ITE IT8613E Super I/O) | Unprivileged user-mode fallback: suppresses dummy ACPI constant (`28°C`), reports NVMe SMART temp, and displays `Fan: Auto` (autonomous hardware PWM) |
+| **Tier 3: Signed Driver (Optional)** | Microsoft WHQL-Signed PawnIO Driver (`winget install namazso.PawnIO`) | Direct CPU Package/Core DTS temperatures via MSR `0x1B1`, Carrier Fan RPM (`CPU_FAN` header on ITE IT8613E Super I/O) | Unprivileged user-mode fallback: suppresses dummy ACPI constants (`0x0BC2` / `0x0BB8` = `27.85°C` / `26.85°C`, rendered as `28°C`), reports NVMe SMART temp, and displays `Fan: Auto` (autonomous hardware PWM) |
 
 ## Optional Hardware Driver: Fan Speed & CPU DTS Thermals (PawnIO)
 
 `mutop-ai` operates in unprivileged user mode without kernel drivers by default. Standard execution provides RAPL power metering, UMA memory breakdown, thread-to-core placement, NPU/GPU duty cycles, and NVMe SMART thermals.
 
 ### Carrier Fan RPM & ACPI Dummy Sensor Suppression
-On the LattePanda Mu Ultra (`DFR1295` compute module with Intel Core Ultra 7 256V + `DFR1293` mini carrier board), carrier fan tachometer feedback is managed by an onboard **ITE IT8613E Super I/O** controller connected via Low Pin Count (LPC) I/O ports. Furthermore, the carrier ACPI DSDT/SSDT table lacks an Embedded Controller (`ETMD == 0`), causing the firmware ACPI thermal zone to return a hardcoded static dummy constant `0x0BB8` (`3000`–`3010` tenths of Kelvin = `26.85°C`–`27.85°C`, rendered as `28°C`). `mutop-ai` suppresses this fake ACPI reading automatically.
+On the LattePanda Mu Ultra (`DFR1295` compute module with Intel Core Ultra 7 256V + `DFR1293` mini carrier board, BIOS `SBCLNLCXR120-A`), carrier fan tachometer feedback is managed by an onboard **ITE IT8613E Super I/O** controller connected via Low Pin Count (LPC) I/O ports. Furthermore, the carrier firmware ACPI tables contain two hardcoded static dummy constants:
+- **`DSDT` `\_SB.PC00.LPCB.MXTP`**: returns `0x0BC2` (`3010` tenths of Kelvin = `301.0 K` = `27.85 °C`, which rounds to `28 °C` in integer display) when the `DFR1293` carrier lacks an ACPI Embedded Controller (`H_EC.DUMY`).
+- **`SSDH\Ther_Rvp` `\_TZ.TZ00._TMP`**: initializes `PTMP` / fallback to `0x0BB8` (`3000` tenths of Kelvin = `300.0 K` = `26.85 °C`) when `ETMD == 0`.
+
+`mutop-ai` automatically filters out both fake ACPI readings (window `26.5°C..=28.5°C` / `2999.5..=3010.5` tenths of Kelvin).
 
 ### Live Telemetry with Signed PawnIO Driver
 To read live **CPU Package Digital Thermal Sensor (DTS)** and **Carrier Fan RPM**, install the optional Microsoft WHQL-signed **PawnIO** driver:

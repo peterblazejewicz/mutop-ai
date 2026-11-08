@@ -191,6 +191,14 @@ impl HardwareCollector {
             gpu.power_w = Some(power_thermals.gpu_pp1_w as f32);
         }
 
+        power_thermals.thermal_status = crate::hardware::power::determine_thermal_status(
+            host.privilege_tier,
+            power_thermals.cpu_package_dts_c,
+            power_thermals.acpi_thermal_zone_c,
+            power_thermals.gpu_c,
+            power_thermals.nvme_composite_c,
+        );
+
         let tracked_processes = if !tracked_patterns.is_empty() || is_mock {
             let procs = collect_tracked_processes(
                 &mut self.processes_state,

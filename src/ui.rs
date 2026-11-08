@@ -590,12 +590,17 @@ fn render_accelerators_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnap
             Style::default().fg(Color::Yellow),
         ),
         Span::styled(
-            if snapshot.gpu.throttling.power_limited {
+            if snapshot.gpu.throttling.temp_limited {
+                " | THM-LIMIT"
+            } else if snapshot.gpu.throttling.power_limited && snapshot.gpu.total_utilization_pct >= 10.0 {
                 " | PWR-LIMIT"
             } else {
                 " | Throt: None"
             },
-            Style::default().fg(if snapshot.gpu.throttling.power_limited {
+            Style::default().fg(if snapshot.gpu.throttling.temp_limited
+                || (snapshot.gpu.throttling.power_limited
+                    && snapshot.gpu.total_utilization_pct >= 10.0)
+            {
                 Color::Red
             } else {
                 Color::DarkGray
@@ -776,7 +781,21 @@ fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: 
         .cpu_package_dts_c
         .or(snapshot.power_thermals.acpi_thermal_zone_c)
         .map(|t| format!("{:.0}°C", t))
-        .unwrap_or_else(|| "-".to_string());
+        .unwrap_or_else(|| {
+            if snapshot.host.privilege_tier
+                == crate::snapshot::types::PrivilegeTier::Tier1Unprivileged
+                || snapshot
+                    .power_thermals
+                    .thermal_status
+                    .as_deref()
+                    .map(|s| s.contains("not elevated"))
+                    .unwrap_or(false)
+            {
+                "- (not elevated)".to_string()
+            } else {
+                "-".to_string()
+            }
+        });
     let gpu_t = snapshot
         .power_thermals
         .gpu_c

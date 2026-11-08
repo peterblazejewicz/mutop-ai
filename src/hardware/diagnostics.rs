@@ -72,10 +72,18 @@ pub fn evaluate_diagnostics(
     }
 
     // 4. GPU or CPU power throttling
-    let gpu_throttled = gpu.throttling.power_limited
-        || gpu.throttling.temp_limited
-        || gpu.throttling.current_limited
-        || gpu.throttling.voltage_limited;
+    // On integrated GPUs (e.g. Lunar Lake Xe2 Arc 140V), IGCL reports power, current,
+    // and voltage limiters as active (1) during idle P-states due to low utilization (gpuUtilizationLimited).
+    // To avoid false positives on idle hardware, non-thermal GPU limiters are only treated as active throttling
+    // when the GPU is actively running a workload (total utilization >= 10.0%).
+    let gpu_active = gpu.total_utilization_pct >= 10.0
+        || gpu.render_3d_pct >= 5.0
+        || gpu.compute_pct >= 5.0;
+    let gpu_throttled = gpu.throttling.temp_limited
+        || (gpu_active
+            && (gpu.throttling.power_limited
+                || gpu.throttling.current_limited
+                || gpu.throttling.voltage_limited));
     let power_mode_throttled = power.effective_power_mode
         == EffectivePowerMode::BestPowerEfficiency
         || power.effective_power_mode == EffectivePowerMode::BatterySaver;
