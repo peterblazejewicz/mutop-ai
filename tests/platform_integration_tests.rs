@@ -523,3 +523,68 @@ fn test_mcp_get_telemetry_snapshot_raw_thermals_filter() {
     assert!(snap["power_thermals"].get("cpu_package_dts_c").is_some());
     assert!(snap["power_thermals"].get("cpu_core_dts_c").is_none());
 }
+
+#[test]
+fn test_thermal_display_model_and_oneshot_scenarios() {
+    let mut platform = MutopPlatform::new_mock();
+    let ctx = TickContext::default();
+    let base_snap = platform.collect_snapshot(&ctx);
+
+    // 1. Real Lunar Lake state (cpu_package_dts_c: Some(53.0), gpu_c: None, nvme_composite_c: Some(31.0), cpu_fan_rpm: Some(2320))
+    {
+        let mut snap = base_snap.clone();
+        snap.power_thermals.cpu_package_dts_c = Some(53.0);
+        snap.power_thermals.acpi_thermal_zone_c = None;
+        snap.power_thermals.gpu_c = None;
+        snap.power_thermals.nvme_composite_c = Some(31.0);
+        snap.power_thermals.cpu_fan_rpm = Some(2320);
+
+        let model = snap.thermal_display_model();
+        assert_eq!(model.gpu_card_temp_str, "53°C (SoC)");
+        assert_eq!(model.zones.len(), 2);
+        assert_eq!(model.zones[0].label, "CPU/GPU/NPU");
+        assert_eq!(model.zones[0].value_str, "53°C");
+        assert_eq!(model.zones[1].label, "NVMe");
+        assert_eq!(model.zones[1].value_str, "31°C");
+
+        let oneshot = platform.format_oneshot(&snap);
+        assert!(oneshot.contains("Thermals: CPU: 53.0C | GPU: shared (SoC PKG) | NVMe: 31.0C | Fan: 2320 RPM"));
+    }
+
+    // 2. Discrete GPU state (cpu_package_dts_c: Some(48.5), gpu_c: Some(44.0))
+    {
+        let mut snap = base_snap.clone();
+        snap.power_thermals.cpu_package_dts_c = Some(48.5);
+        snap.power_thermals.acpi_thermal_zone_c = None;
+        snap.power_thermals.gpu_c = Some(44.0);
+        snap.power_thermals.nvme_composite_c = Some(41.0);
+        snap.power_thermals.cpu_fan_rpm = Some(2400);
+
+        let model = snap.thermal_display_model();
+        assert_eq!(model.zones.len(), 3);
+        assert_eq!(model.zones[0].label, "CPU/NPU");
+        assert_eq!(model.zones[1].label, "GPU");
+        assert_eq!(model.zones[2].label, "NVMe");
+
+        let oneshot = platform.format_oneshot(&snap);
+        assert!(oneshot.contains("Thermals: CPU: 48.5C | GPU: 44.0C | NVMe: 41.0C | Fan: 2400 RPM"));
+    }
+
+    // 3. Unprivileged state (Tier1Unprivileged, all temps None)
+    {
+        let mut snap = base_snap.clone();
+        snap.host.privilege_tier = mutop_ai::snapshot::types::PrivilegeTier::Tier1Unprivileged;
+        snap.power_thermals.cpu_package_dts_c = None;
+        snap.power_thermals.acpi_thermal_zone_c = None;
+        snap.power_thermals.gpu_c = None;
+        snap.power_thermals.nvme_composite_c = None;
+        snap.power_thermals.cpu_fan_rpm = None;
+
+        let model = snap.thermal_display_model();
+        assert_eq!(model.zones[0].label, "CPU/GPU/NPU");
+        assert_eq!(model.zones[0].value_str, "- (not elevated)");
+
+        let oneshot = platform.format_oneshot(&snap);
+        assert!(oneshot.contains("Thermals: CPU: n/a (not elevated) | GPU: - | NVMe: - | Fan: Auto"));
+    }
+}

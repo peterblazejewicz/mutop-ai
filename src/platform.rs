@@ -347,16 +347,8 @@ impl EdgePlatform for MutopPlatform {
             snapshot.npu.activity_status
         );
 
-        let peak_temp = [
-            snapshot.power_thermals.cpu_package_dts_c,
-            snapshot.power_thermals.acpi_thermal_zone_c,
-            snapshot.power_thermals.gpu_c,
-            snapshot.power_thermals.nvme_composite_c,
-        ]
-        .into_iter()
-        .flatten()
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let thermal_headroom_c = peak_temp.map(|t| ((100.0 - t).max(0.0)) as i32);
+        let thermal_model = snapshot.thermal_display_model();
+        let thermal_headroom_c = thermal_model.thermal_headroom_c(100.0);
 
         let power_efficiency = Some(format!(
             "{:.1} W package ({:?})",
@@ -522,42 +514,15 @@ impl EdgePlatform for MutopPlatform {
             snapshot.power_thermals.gpu_pp1_w,
             snapshot.power_thermals.dram_w
         );
-        let cpu_temp_str = snapshot
-            .power_thermals
-            .cpu_package_dts_c
-            .or(snapshot.power_thermals.acpi_thermal_zone_c)
-            .map(|t| format!("{:.1}C", t))
-            .unwrap_or_else(|| {
-                if snapshot.host.privilege_tier
-                    == crate::snapshot::types::PrivilegeTier::Tier1Unprivileged
-                {
-                    "n/a (not elevated)".to_string()
-                } else if let Some(ref status) = snapshot.power_thermals.thermal_status {
-                    format!("n/a ({})", status)
-                } else {
-                    "-".to_string()
-                }
-            });
-        let gpu_temp_str = snapshot
-            .power_thermals
-            .gpu_c
-            .map(|t| format!("{:.1}C", t))
-            .unwrap_or_else(|| "-".to_string());
-        let nvme_temp_str = snapshot
-            .power_thermals
-            .nvme_composite_c
-            .map(|t| format!("{:.1}C", t))
-            .unwrap_or_else(|| "-".to_string());
-        let fan_str = snapshot
-            .power_thermals
-            .cpu_fan_rpm
-            .map(|r| format!("{} RPM", r))
-            .unwrap_or_else(|| "Auto".to_string());
+        let thermal_model = snapshot.thermal_display_model();
 
         let _ = writeln!(
             out,
             "  Thermals: CPU: {} | GPU: {} | NVMe: {} | Fan: {}",
-            cpu_temp_str, gpu_temp_str, nvme_temp_str, fan_str
+            thermal_model.oneshot_cpu_str,
+            thermal_model.oneshot_gpu_str,
+            thermal_model.oneshot_nvme_str,
+            thermal_model.oneshot_fan_str
         );
         let _ = writeln!(out);
         let _ = writeln!(

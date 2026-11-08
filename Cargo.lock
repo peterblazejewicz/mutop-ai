@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "edgetop-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "mutop-ai"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "crossterm",

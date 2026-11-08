@@ -374,3 +374,23 @@ pub struct MutopSnapshot {
     #[serde(default)]
     pub events: Vec<edgetop_core::ProcessLifecycleEvent>,
 }
+
+impl MutopSnapshot {
+    pub fn thermal_display_model(&self) -> edgetop_core::thermal_view::ThermalDisplayModel {
+        let inputs = edgetop_core::thermal_view::RawThermalInputs {
+            cpu_package_c: self.power_thermals.cpu_package_dts_c,
+            acpi_thermal_c: self.power_thermals.acpi_thermal_zone_c,
+            gpu_c: self.power_thermals.gpu_c,
+            npu_c: None,
+            nvme_composite_c: self.power_thermals.nvme_composite_c,
+            fan_rpm: self.power_thermals.cpu_fan_rpm,
+            is_unprivileged: self.host.privilege_tier == PrivilegeTier::Tier1Unprivileged,
+            thermal_status: self.power_thermals.thermal_status.clone(),
+            extra_zones: Vec::new(),
+        };
+        edgetop_core::thermal_view::ThermalDisplayModel::process(
+            &inputs,
+            edgetop_core::thermal_view::ThermalTopology::UnifiedComputeTile,
+        )
+    }
+}

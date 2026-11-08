@@ -559,11 +559,8 @@ fn render_accelerators_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnap
     ]));
 
     // GPU Shared VRAM & Power & Thermals
-    let temp_str = snapshot
-        .gpu
-        .temperature_c
-        .map(|t| format!("{:.0}°C", t))
-        .unwrap_or_else(|| "-".to_string());
+    let thermal_model = snapshot.thermal_display_model();
+    let temp_str = thermal_model.gpu_card_temp_str;
     let pwr_str = snapshot
         .gpu
         .power_w
@@ -747,6 +744,7 @@ fn render_memory_storage_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSn
 }
 
 fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnapshot) {
+    let inner_width = area.width.saturating_sub(2) as usize;
     let mut lines = Vec::new();
 
     // Package power & rails
@@ -776,41 +774,20 @@ fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: 
     ]));
 
     // Thermals & fan & AI health
-    let cpu_t = snapshot
-        .power_thermals
-        .cpu_package_dts_c
-        .or(snapshot.power_thermals.acpi_thermal_zone_c)
-        .map(|t| format!("{:.0}°C", t))
-        .unwrap_or_else(|| {
-            if snapshot.host.privilege_tier
-                == crate::snapshot::types::PrivilegeTier::Tier1Unprivileged
-                || snapshot
-                    .power_thermals
-                    .thermal_status
-                    .as_deref()
-                    .map(|s| s.contains("not elevated"))
-                    .unwrap_or(false)
-            {
-                "- (not elevated)".to_string()
+    let thermal_model = snapshot.thermal_display_model();
+    let zones_str = thermal_model
+        .zones
+        .iter()
+        .map(|z| {
+            let lbl = if inner_width < 48 {
+                &z.short_label
             } else {
-                "-".to_string()
-            }
-        });
-    let gpu_t = snapshot
-        .power_thermals
-        .gpu_c
-        .map(|t| format!("{:.0}°C", t))
-        .unwrap_or_else(|| "-".to_string());
-    let nvme_t = snapshot
-        .power_thermals
-        .nvme_composite_c
-        .map(|t| format!("{:.0}°C", t))
-        .unwrap_or_else(|| "-".to_string());
-    let fan_rpm = snapshot
-        .power_thermals
-        .cpu_fan_rpm
-        .map(|r| format!("{:4} RPM", r))
-        .unwrap_or_else(|| "Auto".to_string());
+                &z.label
+            };
+            format!("{}:{}", lbl, z.value_str)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let (ai_status_str, ai_status_col) = match snapshot.ai_diagnostics.status {
         DiagnosticStatus::Healthy => ("HEALTHY", Color::LightGreen),
@@ -818,17 +795,27 @@ fn render_power_thermals_network_panel(frame: &mut Frame, area: Rect, snapshot: 
         DiagnosticStatus::Critical => ("CRITICAL", Color::LightRed),
     };
 
+    let compact_thermals = inner_width < 70;
+    let thermals_prefix = if compact_thermals {
+        "Thermals: "
+    } else {
+        "Thermals   : "
+    };
+    let fan_span = if compact_thermals {
+        format!("| Fan:{} ", thermal_model.tui_fan_str.trim_start())
+    } else {
+        format!("| Fan: {} ", thermal_model.tui_fan_str)
+    };
+    let ai_prefix = if compact_thermals { "| AI:" } else { "| AI: " };
+
     lines.push(Line::from(vec![
-        Span::styled("Thermals   : ", Style::default().fg(Color::LightRed)),
+        Span::styled(thermals_prefix, Style::default().fg(Color::LightRed)),
         Span::styled(
-            format!("CPU:{} GPU:{} NVMe:{} ", cpu_t, gpu_t, nvme_t),
+            format!("{} ", zones_str),
             Style::default().fg(Color::White),
         ),
-        Span::styled(
-            format!("| Fan: {} ", fan_rpm),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::styled("| AI: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(fan_span, Style::default().fg(Color::Cyan)),
+        Span::styled(ai_prefix, Style::default().fg(Color::DarkGray)),
         Span::styled(
             ai_status_str,
             Style::default()

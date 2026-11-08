@@ -335,7 +335,7 @@ pub const SCHEMA_FIELDS: &[edgetop_core::SchemaField] = &[
     edgetop_core::SchemaField {
         field: "power_thermals.cpu_package_dts_c",
         field_type: "f32?",
-        description: "CPU package digital thermal sensor (DTS) in Celsius",
+        description: "SoC Compute Tile (CPU/GPU/NPU) package DTS in Celsius",
     },
     edgetop_core::SchemaField {
         field: "power_thermals.thermal_status",
