@@ -380,7 +380,7 @@ fn test_thermal_status_unprivileged_and_elevated_scenarios() {
 #[test]
 fn test_print_schema_and_version() {
     use mutop_ai::{print_schema, version};
-    assert_eq!(version(), "0.1.0");
+    assert_eq!(version(), "0.1.1");
     // Verify print_schema runs cleanly
     print_schema();
 }
