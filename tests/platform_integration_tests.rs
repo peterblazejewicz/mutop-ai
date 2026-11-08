@@ -16,7 +16,7 @@ fn test_mutop_platform_metadata_and_mock_collection() {
     assert_eq!(meta.binary_name, "mutop-ai");
     assert!(meta.board_name.contains("LattePanda Mu Ultra"));
     assert_eq!(meta.mcp_scheme, "mutop");
-    assert_eq!(meta.default_idle_baseline_w, 8.5);
+    assert_eq!(meta.default_idle_baseline_w, 4.8);
 
     let ctx = TickContext {
         interval_ms: Some(200.0),
@@ -94,6 +94,38 @@ fn test_mutop_platform_summary_and_diagnostics_extraction() {
     assert_eq!(diag.health_status, "Healthy");
     assert!(diag.thermal_headroom_c.is_some());
     assert!(diag.npu_status.contains("Intel(R) AI Boost"));
+
+    // Case 3: Unprivileged scenario with no thermal sensors available
+    let mut unpriv_snap = snapshot.clone();
+    unpriv_snap.power_thermals.cpu_package_dts_c = None;
+    unpriv_snap.power_thermals.acpi_thermal_zone_c = None;
+    unpriv_snap.power_thermals.gpu_c = None;
+    unpriv_snap.power_thermals.nvme_composite_c = None;
+    unpriv_snap.power_thermals.thermal_status =
+        Some("temperature not available (not elevated)".to_string());
+
+    let unpriv_sample = platform.extract_summary_sample(&unpriv_snap, 50.0);
+    assert_eq!(
+        unpriv_sample.thermal_status.as_deref(),
+        Some("temperature not available (not elevated)")
+    );
+
+    let unpriv_diag = platform.extract_diagnostics(&unpriv_snap);
+    assert!(
+        unpriv_diag.thermal_headroom_c.is_none(),
+        "thermal_headroom_c must be None when no temperatures are available"
+    );
+    assert_eq!(
+        unpriv_diag.thermal_status.as_deref(),
+        Some("temperature not available (not elevated)")
+    );
+
+    // Case 4: Peak temperature selects the maximum across all zones
+    let mut multi_temp_snap = snapshot.clone();
+    multi_temp_snap.power_thermals.cpu_package_dts_c = Some(50.0);
+    multi_temp_snap.power_thermals.gpu_c = Some(75.0);
+    let multi_diag = platform.extract_diagnostics(&multi_temp_snap);
+    assert_eq!(multi_diag.thermal_headroom_c, Some(25)); // (100 - 75).max(0)
 }
 
 #[test]
@@ -420,4 +452,74 @@ fn test_include_threads_omission_behavior() {
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn test_unprivileged_summary_report_thermals() {
+    let mut platform = MutopPlatform::new_mock();
+    let ctx = TickContext::default();
+    let mut snapshot = platform.collect_snapshot(&ctx);
+
+    snapshot.host.privilege_tier =
+        mutop_ai::snapshot::types::PrivilegeTier::Tier1Unprivileged;
+    snapshot.power_thermals.cpu_package_dts_c = None;
+    snapshot.power_thermals.acpi_thermal_zone_c = None;
+    snapshot.power_thermals.gpu_c = None;
+    snapshot.power_thermals.nvme_composite_c = None;
+    snapshot.power_thermals.cpu_fan_rpm = None;
+    snapshot.power_thermals.thermal_status =
+        mutop_ai::hardware::power::determine_thermal_status(
+            snapshot.host.privilege_tier,
+            snapshot.power_thermals.cpu_package_dts_c,
+            snapshot.power_thermals.acpi_thermal_zone_c,
+            snapshot.power_thermals.gpu_c,
+            snapshot.power_thermals.nvme_composite_c,
+        );
+    assert_eq!(
+        snapshot.power_thermals.thermal_status.as_deref(),
+        Some("temperature not available (not elevated)")
+    );
+
+    let sample = platform.extract_summary_sample(&snapshot, 50.0);
+    assert!(sample.temps.is_empty());
+    assert_eq!(
+        sample.thermal_status.as_deref(),
+        Some("temperature not available (not elevated)")
+    );
+
+    let mut accumulator = edgetop_core::summary::SummaryAccumulator::default();
+    accumulator.record_sample(&sample);
+    let report = accumulator.format_report(platform.metadata(), 50.0, 0.2);
+
+    assert!(report.is_ascii());
+    assert!(report.contains("Thermals           : temperature not available (not elevated)"));
+    assert!(!report.contains("Thermals:\n"));
+}
+
+#[test]
+fn test_mcp_get_telemetry_snapshot_raw_thermals_filter() {
+    let mut platform = MutopPlatform::new_mock();
+
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "method": "tools/call",
+        "params": {
+            "name": "get_telemetry_snapshot",
+            "arguments": {
+                "include_raw_thermals": false
+            }
+        }
+    });
+
+    let resp = handle_mcp_request(&mut platform, &req, None).unwrap();
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+    let snap: serde_json::Value = serde_json::from_str(text).unwrap();
+
+    // Power rails and package temp must be preserved; raw per-core array is stripped
+    assert!(snap["power_thermals"].get("package_w").is_some());
+    assert!(snap["power_thermals"].get("core_pp0_w").is_some());
+    assert!(snap["power_thermals"].get("dram_w").is_some());
+    assert!(snap["power_thermals"].get("cpu_package_dts_c").is_some());
+    assert!(snap["power_thermals"].get("cpu_core_dts_c").is_none());
 }

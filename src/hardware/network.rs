@@ -282,13 +282,20 @@ fn query_windows_wifi7() -> Option<Wifi7Snapshot> {
             return None;
         }
 
+        let is_state = (*list_ptr).interface_info[0].is_state;
         let first_guid = (*list_ptr).interface_info[0].interface_guid;
         WlanFreeMemory(list_ptr as *mut _);
+
+        // wlan_interface_state_connected == 1; do not fabricate Wi-Fi metrics when disconnected
+        if is_state != 1 {
+            WlanCloseHandle(handle, std::ptr::null());
+            return None;
+        }
 
         let mut rssi_data_size = 0u32;
         let mut rssi_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
         let mut opcode_type = 0u32;
-        let mut rssi_dbm = -60;
+        let mut rssi_opt: Option<i32> = None;
 
         if WlanQueryInterface(
             handle,
@@ -301,13 +308,13 @@ fn query_windows_wifi7() -> Option<Wifi7Snapshot> {
         ) == 0
             && !rssi_ptr.is_null()
         {
-            rssi_dbm = *(rssi_ptr as *const i32);
+            rssi_opt = Some(*(rssi_ptr as *const i32));
             WlanFreeMemory(rssi_ptr);
         }
 
         let mut qual_data_size = 0u32;
         let mut qual_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-        let mut quality = WlanRealtimeConnectionQuality::default();
+        let mut quality_opt: Option<WlanRealtimeConnectionQuality> = None;
 
         if WlanQueryInterface(
             handle,
@@ -320,17 +327,40 @@ fn query_windows_wifi7() -> Option<Wifi7Snapshot> {
         ) == 0
             && !qual_ptr.is_null()
         {
-            quality = *(qual_ptr as *const WlanRealtimeConnectionQuality);
+            quality_opt = Some(*(qual_ptr as *const WlanRealtimeConnectionQuality));
             WlanFreeMemory(qual_ptr);
+        }
+
+        // wlan_intf_opcode_channel_number == 8
+        let mut chan_data_size = 0u32;
+        let mut chan_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut channel = 0u32;
+        if WlanQueryInterface(
+            handle,
+            first_guid.as_ptr(),
+            8,
+            std::ptr::null(),
+            &mut chan_data_size,
+            &mut chan_ptr,
+            &mut opcode_type,
+        ) == 0
+            && !chan_ptr.is_null()
+        {
+            channel = *(chan_ptr as *const u32);
+            WlanFreeMemory(chan_ptr);
         }
 
         WlanCloseHandle(handle, std::ptr::null());
 
-        let is_eht = quality.dot11_phy_type == 10;
-        let phy_type = if is_eht {
-            "EHT (802.11be)".to_string()
-        } else {
-            "HE (802.11ax)".to_string()
+        let rssi_dbm = rssi_opt?;
+        let quality = quality_opt.unwrap_or_default();
+
+        let phy_type = match quality.dot11_phy_type {
+            10 => "EHT (802.11be)".to_string(),
+            9 => "HE (802.11ax)".to_string(),
+            8 => "VHT (802.11ac)".to_string(),
+            7 => "HT (802.11n)".to_string(),
+            _ => "802.11".to_string(),
         };
 
         Some(Wifi7Snapshot {
@@ -339,7 +369,7 @@ fn query_windows_wifi7() -> Option<Wifi7Snapshot> {
             signal_quality_pct: quality.link_quality.min(100) as u8,
             rx_rate_mbps: quality.rx_rate / 1000,
             tx_rate_mbps: quality.tx_rate / 1000,
-            channel: 36,
+            channel,
             is_mlo: quality.is_mlo_connection != 0,
         })
     }

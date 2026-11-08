@@ -487,7 +487,7 @@ fn render_accelerators_panel(frame: &mut Frame, area: Rect, snapshot: &MutopSnap
             Span::styled("  llama   : ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 if snapshot.network.loopback.llama_server_listening {
-                    ":8080 listening | Slots Idle | Zero-Copy FastRPC/MCDM"
+                    ":8080 listening | Slots Idle | Zero-Copy Level Zero/MCDM"
                 } else {
                     "Offline (no /slots on :8080) | MCDM compute queue ready"
                 },

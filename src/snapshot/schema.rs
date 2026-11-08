@@ -333,6 +333,16 @@ pub const SCHEMA_FIELDS: &[edgetop_core::SchemaField] = &[
         description: "RAPL package power in Watts",
     },
     edgetop_core::SchemaField {
+        field: "power_thermals.cpu_package_dts_c",
+        field_type: "f32?",
+        description: "CPU package digital thermal sensor (DTS) in Celsius",
+    },
+    edgetop_core::SchemaField {
+        field: "power_thermals.thermal_status",
+        field_type: "string?",
+        description: "Thermal sensor availability or status message",
+    },
+    edgetop_core::SchemaField {
         field: "storage.read_mb_s",
         field_type: "f64",
         description: "NVMe disk read throughput MB/s",

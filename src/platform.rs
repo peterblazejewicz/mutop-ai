@@ -27,7 +27,7 @@ impl MutopPlatform {
                 board_name: "LattePanda Mu Ultra (Intel Core Ultra 7 256V)",
                 description: "LattePanda Mu Ultra & Intel Lunar Lake Hardware Telemetry Monitor",
                 version: env!("CARGO_PKG_VERSION"),
-                default_idle_baseline_w: 8.5,
+                default_idle_baseline_w: 4.8,
                 default_stream_interval_ms: 200,
                 mcp_server_name: "mutop-ai",
                 mcp_scheme: "mutop",
@@ -46,7 +46,7 @@ impl MutopPlatform {
                 board_name: "LattePanda Mu Ultra (Intel Core Ultra 7 256V)",
                 description: "LattePanda Mu Ultra & Intel Lunar Lake Hardware Telemetry Monitor",
                 version: env!("CARGO_PKG_VERSION"),
-                default_idle_baseline_w: 8.5,
+                default_idle_baseline_w: 4.8,
                 default_stream_interval_ms: 200,
                 mcp_server_name: "mutop-ai",
                 mcp_scheme: "mutop",
@@ -310,9 +310,10 @@ impl EdgePlatform for MutopPlatform {
             net_rx_mb_s,
             net_tx_mb_s,
             temps,
+            thermal_status: snapshot.power_thermals.thermal_status.clone(),
             accelerator_active,
             accelerator_phase,
-            is_heuristic: false,
+            is_heuristic: snapshot.npu.slots_metrics.is_none() && accelerator_active,
             prompt_tokens_processed,
             tokens_decoded,
             completed_task_tokens,
@@ -346,14 +347,16 @@ impl EdgePlatform for MutopPlatform {
             snapshot.npu.activity_status
         );
 
-        let peak_temp = snapshot
-            .power_thermals
-            .cpu_package_dts_c
-            .or(snapshot.power_thermals.acpi_thermal_zone_c)
-            .or(snapshot.power_thermals.gpu_c)
-            .or(snapshot.power_thermals.nvme_composite_c)
-            .unwrap_or(45.0);
-        let thermal_headroom_c = Some(((100.0 - peak_temp).max(0.0)) as i32);
+        let peak_temp = [
+            snapshot.power_thermals.cpu_package_dts_c,
+            snapshot.power_thermals.acpi_thermal_zone_c,
+            snapshot.power_thermals.gpu_c,
+            snapshot.power_thermals.nvme_composite_c,
+        ]
+        .into_iter()
+        .flatten()
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let thermal_headroom_c = peak_temp.map(|t| ((100.0 - t).max(0.0)) as i32);
 
         let power_efficiency = Some(format!(
             "{:.1} W package ({:?})",
@@ -371,6 +374,7 @@ impl EdgePlatform for MutopPlatform {
             active_bottlenecks: snapshot.ai_diagnostics.bottlenecks.clone(),
             npu_status,
             thermal_headroom_c,
+            thermal_status: snapshot.power_thermals.thermal_status.clone(),
             power_efficiency,
             summary,
             recommendations: snapshot.ai_diagnostics.recommendations.clone(),

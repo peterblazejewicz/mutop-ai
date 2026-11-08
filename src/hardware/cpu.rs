@@ -219,21 +219,14 @@ fn collect_windows_cpu(state: &mut CpuCollectorState) -> LunarLakeCpuSnapshot {
 
     for i in 0..CORE_COUNT {
         per_core_current_mhz[i] = power_info[i].current_mhz;
-        per_core_max_mhz[i] = if power_info[i].max_mhz > 0 {
-            power_info[i].max_mhz
-        } else if state.topology.get(i) == Some(&CoreMicroarch::LionCoveP) {
-            4800
-        } else {
-            3700
-        };
-        per_core_limit_mhz[i] = if power_info[i].mhz_limit > 0 {
-            power_info[i].mhz_limit
-        } else {
-            per_core_max_mhz[i]
-        };
+        per_core_max_mhz[i] = power_info[i].max_mhz;
+        per_core_limit_mhz[i] = power_info[i].mhz_limit;
         per_core_effective_mhz[i] = per_core_current_mhz[i];
 
-        if per_core_limit_mhz[i] < per_core_max_mhz[i] {
+        if per_core_max_mhz[i] > 0
+            && per_core_limit_mhz[i] > 0
+            && per_core_limit_mhz[i] < per_core_max_mhz[i]
+        {
             is_throttled = true;
         }
     }

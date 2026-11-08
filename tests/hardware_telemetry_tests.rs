@@ -411,3 +411,80 @@ fn test_live_collector_graceful_run() {
     assert_eq!(snapshot.host.total_ai_tops, 115);
     assert_eq!(snapshot.memory.installed_mop_mb, 16384);
 }
+
+#[test]
+fn test_gpu_rc6_idle_limiter_suppression_and_active_throttling() {
+    let mut collector = HardwareCollector::new_mock();
+    let snapshot = collector.collect_snapshot(None, &[], false);
+
+    // 1. Idle GPU (0.0% load) with power/current/voltage limiters = true (RC6 idle state)
+    let mut idle_gpu = snapshot.gpu.clone();
+    idle_gpu.total_utilization_pct = 0.0;
+    idle_gpu.render_3d_pct = 0.0;
+    idle_gpu.compute_pct = 0.0;
+    idle_gpu.throttling.power_limited = true;
+    idle_gpu.throttling.current_limited = true;
+    idle_gpu.throttling.voltage_limited = true;
+    idle_gpu.throttling.temp_limited = false;
+
+    let diag_idle = evaluate_diagnostics(
+        &snapshot.cpu,
+        &snapshot.memory,
+        &idle_gpu,
+        &snapshot.power_thermals,
+        &snapshot.storage,
+        &snapshot.timing,
+        None,
+        false,
+    );
+    assert!(
+        !diag_idle.gpu_or_cpu_power_throttling,
+        "Idle RC6 GPU power/current/voltage limiters must be suppressed"
+    );
+    assert_eq!(diag_idle.status, DiagnosticStatus::Healthy);
+
+    // 2. Active GPU (25.0% load) with power_limited = true -> must flag throttling
+    let mut active_gpu = snapshot.gpu.clone();
+    active_gpu.total_utilization_pct = 25.0;
+    active_gpu.compute_pct = 20.0;
+    active_gpu.throttling.power_limited = true;
+    active_gpu.throttling.temp_limited = false;
+
+    let diag_active = evaluate_diagnostics(
+        &snapshot.cpu,
+        &snapshot.memory,
+        &active_gpu,
+        &snapshot.power_thermals,
+        &snapshot.storage,
+        &snapshot.timing,
+        None,
+        false,
+    );
+    assert!(
+        diag_active.gpu_or_cpu_power_throttling,
+        "Active GPU with power_limited = true must flag power throttling"
+    );
+    assert_eq!(diag_active.status, DiagnosticStatus::Degraded);
+
+    // 3. Idle GPU (0.0% load) with temp_limited = true -> thermal limit must ALWAYS trigger
+    let mut thermal_gpu = snapshot.gpu.clone();
+    thermal_gpu.total_utilization_pct = 0.0;
+    thermal_gpu.throttling.power_limited = false;
+    thermal_gpu.throttling.temp_limited = true;
+
+    let diag_thermal = evaluate_diagnostics(
+        &snapshot.cpu,
+        &snapshot.memory,
+        &thermal_gpu,
+        &snapshot.power_thermals,
+        &snapshot.storage,
+        &snapshot.timing,
+        None,
+        false,
+    );
+    assert!(
+        diag_thermal.gpu_or_cpu_power_throttling,
+        "GPU temp_limited = true must always trigger throttling regardless of load"
+    );
+    assert_eq!(diag_thermal.status, DiagnosticStatus::Degraded);
+}
